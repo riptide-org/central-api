@@ -1,0 +1,17 @@
+[package]
+name = "central-api"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+warp = "0.3"
+futures="0.3.16"
+tokio-stream="0.1.7"
+pretty_env_logger="*"
+bytes="1"
+mobc="0.7.3"
+mobc-postgres = { version = "*", features = ["with-chrono-0_4"] }
+chrono = { version = "0.4", features = ["serde"] }
