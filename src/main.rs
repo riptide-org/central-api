@@ -55,7 +55,8 @@ fn with_db(db_pool: db::DBPool) -> impl Filter<Extract = (db::DBPool,), Error = 
 async fn main() {
     pretty_env_logger::init();
 
-    let db_pool = db::create_pool().unwrap();
+    let db_pool = db::create_pool().expect("failed to create db pool");
+    db::init_db(&db_pool).await.expect("failed to initalize db");
 
     let agents = ServerAgents::default();
     let streams = PendingStreams::default();
@@ -64,11 +65,13 @@ async fn main() {
     let streams = warp::any().map(move || streams.clone());
 
     let ws = warp::path("server-register")
+        .and(path::param::<usize>().map(Some).or_else(|_| async { Ok::<(Option<usize>,), std::convert::Infallible>((None,)) })) //Optional usize parameter
         .and(path::end())
         .and(warp::ws())
+        .and(with_db(db_pool.clone()))
         .and(agents.clone())
-        .map(|ws: warp::ws::Ws, a| {
-            ws.on_upgrade(move |s| handler::websocket(s, a))
+        .map(|id: Option<usize>, ws: warp::ws::Ws, db, a| {
+            ws.on_upgrade(move |s| handler::websocket(s, id, db, a))
         });
 
     let upload = warp::post()
@@ -97,7 +100,7 @@ async fn main() {
     let root = warp::any()
         .map(|| warp::reply::reply());
 
-    let routes = ws.or(upload).or(download).or(root).with(warp::cors().allow_any_origin());
+    let routes = heartbeat.or(ws).or(upload).or(download).with(warp::cors().allow_any_origin()).recover(error::handle_rejection);
 
     warp::serve(routes)
         .run(SERVER_IP.parse::<SocketAddr>().expect("Failed to parse address"))

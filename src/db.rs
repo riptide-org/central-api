@@ -14,7 +14,7 @@ const DB_POOL_TIMEOUT_SECONDS: u64 = 15;
 const INIT_SQL: &str = "./config/db.sql";
 
 pub fn create_pool() -> Result<DBPool, mobc::Error<Error>> { //TODO wrap this error
-    let config = Config::from_str("postgres://postgres@127.0.0.1:7878/postgres")?; //TODO load this from config file
+    let config = Config::from_str("postgres://postgres@127.0.0.1:7877/postgres")?; //TODO load this from config file
 
     let manager = PgConnectionManager::new(config, NoTls);
     Ok(Pool::builder()
@@ -34,6 +34,6 @@ pub async fn init_db(pool: &DBPool) -> Result<(), ()> { //TODO Error handling
     con
         .batch_execute(&init_file)
         .await
-        .map_err(|_| ())?;
+        .map_err(|e| println!("{}", e))?;
     Ok(())
 }
