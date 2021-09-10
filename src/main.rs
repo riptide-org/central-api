@@ -21,6 +21,7 @@
 mod db;
 mod handler;
 mod error;
+mod structs;
 
 use std::collections::HashMap;
 use std::sync::{

@@ -23,6 +23,12 @@ struct ErrorResponse {
     message: String,
 }
 
+impl std::convert::From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Error {
+        Error::ReadFileError(e)
+    }
+}
+
 pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply, Infallible> {
     let code;
     let message;
@@ -64,7 +70,10 @@ pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply,
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("Server error occured")
+        match *&self {
+            Error::DBInitError(e) => f.write_str(&e.to_string()),
+            _ => f.write_str("Server error occured")
+        }
     }
 }
 
