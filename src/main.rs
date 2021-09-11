@@ -98,10 +98,15 @@ async fn main() {
         .and_then(handler::heartbeat);
 
     //Non-Api requests, this will be like the front end website etc
-    let root = warp::any()
-        .map(|| warp::reply::reply());
+    let root = warp::get()
+        .and(warp::fs::dir("./www/static/"));
 
-    let routes = heartbeat.or(ws).or(upload).or(download).with(warp::cors().allow_any_origin()).recover(error::handle_rejection);
+    let catcher = warp::any()
+        .map(|| {
+            warp::reply::with_status("Not Found", warp::hyper::StatusCode::from_u16(404).unwrap())
+        });
+
+    let routes = heartbeat.or(ws).or(upload).or(download).or(root).or(catcher).with(warp::cors().allow_any_origin()).recover(error::handle_rejection);
 
     warp::serve(routes)
         .run(SERVER_IP.parse::<SocketAddr>().expect("Failed to parse address"))
