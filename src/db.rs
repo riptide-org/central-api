@@ -5,7 +5,7 @@ use std::time::Duration;
 use mobc::{Connection, Pool};
 use std::fs;
 use crate::error::Error;
-use crate::structs::{Agent, AgentRequest, AgentResponse, AgentUpdateRequest};
+use crate::structs::{Agent, AgentRequest, AgentUpdateRequest};
 
 const DB_POOL_MAX_OPEN: u64 = 32;
 const DB_POOL_MAX_IDLE: u64 = 8;
@@ -45,16 +45,8 @@ pub async fn init_db(pool: &DBPool) -> Result<(), Error> {
     Ok(())
 }
 
-// CREATE TABLE IF NOT EXISTS agents
-// (
-//     id BIGSERIAL PRIMARY KEY NOT NULL,
-//     created_at timestamp with time zone DEFAULT (now() at time zone 'utc'),
-//     last_signin timestamp with time zone DEFAULT (now() at time zone 'utc'),
-//     unique_id text --Generated from the hardware the server agent is running on.
-// );
-
 pub enum Search {
-    Id(i64),
+    Id(usize),
     unique_id(String),
 }
 
@@ -100,7 +92,7 @@ pub async fn add_agent(db_pool: &DBPool, body: AgentRequest) -> Result<Agent, Er
     Agent::from_database(&row)
 }
 
-pub async fn update_agent(db_pool: &DBPool, id: &i64, body: AgentUpdateRequest) -> Result<Agent, Error> {
+pub async fn update_agent(db_pool: &DBPool, id: &usize, body: AgentUpdateRequest) -> Result<Agent, Error> {
     let conn = get_db_con(db_pool).await?;
     let row = conn
         .query_one("
@@ -108,7 +100,7 @@ pub async fn update_agent(db_pool: &DBPool, id: &i64, body: AgentUpdateRequest) 
             SET last_signin = $1
             WHERE id = $2
             RETURNING *;
-        ", &[&body.last_signin(), id])
+        ", &[&body.last_signin(), &(*id as i64)])
         .await
         .map_err(Error::DBQueryError)?;
 
@@ -116,13 +108,13 @@ pub async fn update_agent(db_pool: &DBPool, id: &i64, body: AgentUpdateRequest) 
 }
 
 #[allow(dead_code)]
-pub async fn delete_agent(db_pool: &DBPool, id: &i64) -> Result<u64, Error> {
+pub async fn delete_agent(db_pool: &DBPool, id: &usize) -> Result<u64, Error> {
     let conn = get_db_con(db_pool).await?;
     conn
         .execute("
             DELETE FROM agents
             WHERE id = $1
-        ", &[id])
+        ", &[&(*id as i64)])
         .await
         .map_err(Error::DBQueryError)
 }

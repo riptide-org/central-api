@@ -51,7 +51,6 @@ fn with_db(db_pool: db::DBPool) -> impl Filter<Extract = (db::DBPool,), Error = 
     warp::any().map(move || db_pool.clone())
 }
 
-
 #[tokio::main]
 async fn main() {
     pretty_env_logger::init();
@@ -65,18 +64,28 @@ async fn main() {
     let agents = warp::any().map(move || agents.clone());
     let streams = warp::any().map(move || streams.clone());
 
-    let ws = warp::path("server-register")
-        .and(path::param::<usize>().map(Some).or_else(|_| async { Ok::<(Option<usize>,), std::convert::Infallible>((None,)) })) //Optional usize parameter
+    let ws_register = warp::post()
+        .and(path("ws-register"))
+        .and(path::end())
+        //Limit content bodies to 8kb
+        .and(warp::body::content_length_limit(1024 * 8))
+        .and(warp::body::json::<structs::AgentRequest>())
+        .and(with_db(db_pool.clone()))
+        .and_then(handler::register_websocket);
+
+
+    let ws = path("ws")
+        .and(path::param::<usize>())
         .and(path::end())
         .and(warp::ws())
         .and(with_db(db_pool.clone()))
         .and(agents.clone())
-        .map(|id: Option<usize>, ws: warp::ws::Ws, db, a| {
+        .map(|id: usize, ws: warp::ws::Ws, db, a| {
             ws.on_upgrade(move |s| handler::websocket(s, id, db, a))
         });
 
     let upload = warp::post()
-        .and(warp::path("upload"))
+        .and(path("upload"))
         .and(path::param())
         .and(path::end())
         .and(warp::filters::body::stream())
@@ -84,7 +93,7 @@ async fn main() {
         .and_then(handler::upload);
     
     let download = warp::get()
-        .and(warp::path("download"))
+        .and(path("download"))
         .and(path::param())
         .and(path::param())
         .and(path::end())
@@ -93,20 +102,24 @@ async fn main() {
         .and_then(handler::download);
 
     let heartbeat = warp::any()
-        .and(warp::path("heartbeat"))
+        .and(path("heartbeat"))
         .and(path::end())
         .and_then(handler::heartbeat);
-
-    //Non-Api requests, this will be like the front end website etc
-    let root = warp::get()
-        .and(warp::fs::dir("./www/static/"));
-
+    
     let catcher = warp::any()
         .map(|| {
             warp::reply::with_status("Not Found", warp::hyper::StatusCode::from_u16(404).unwrap())
         });
 
-    let routes = heartbeat.or(ws).or(upload).or(download).or(root).or(catcher).with(warp::cors().allow_any_origin()).recover(error::handle_rejection);
+    //TODO implement this propery (i.e. have things behind a 'v1' flag if we ever need to update the api)
+    let routes = heartbeat
+        .or(ws_register)
+        .or(ws)
+        .or(upload)
+        .or(download)
+        .or(catcher)
+        .with(warp::cors().allow_any_origin())
+        .recover(error::handle_rejection);
 
     warp::serve(routes)
         .run(SERVER_IP.parse::<SocketAddr>().expect("Failed to parse address"))

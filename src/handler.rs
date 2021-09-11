@@ -1,6 +1,6 @@
 use crate::{ServerAgents, PendingStreams, NEXT_STREAM_ID, SERVER_IP, REQUEST_TIMEOUT_THRESHOLD, error::Error};
 use crate::db::*;
-use crate::structs::AgentUpdateRequest;
+use crate::structs::*;
 use warp::{reply::Response, Rejection};
 use warp::ws::{Message, WebSocket};
 use warp::hyper::{Response as Builder, StatusCode, Body};
@@ -11,6 +11,8 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use futures::{SinkExt, StreamExt, TryFutureExt, Stream};
 use std::time::Duration;
 use warp::reject;
+use std::convert::TryFrom;
+use crate::structs::{MessageResponse};
 
 pub async fn heartbeat() -> Result<Response, Rejection> {
     //Should do a check of the database here too
@@ -81,44 +83,38 @@ pub async fn download(agent_id: usize, file_id: usize, agents: ServerAgents, str
     }
 }
 
-pub async fn static_file() -> Result<Response, Rejection> {
+pub async fn register_websocket(r: AgentRequest, db: DBPool) -> Result<impl warp::Reply, Rejection> {
+    let agent = match add_agent(&db, r).await {
+        Ok(f) => f,
+        Err(e) => return Err(warp::reject::custom(e)),
+    };
 
-    Err(warp::reject())
+    let json = warp::reply::json(&MessageResponse::Created(agent.id().to_string()));
+    Ok(warp::reply::with_status(json, StatusCode::from_u16(201).unwrap()))
 }
 
 async fn close_ws_conn(ws: WebSocket, msg: &str) -> () {
-    //TODO error handling
     eprintln!("{}" , msg);
     let (mut tx, rx) = ws.split();
-    tx.send(Message::text(msg)).await;
-    futures::stream::SplitSink::reunite(tx, rx).expect("Failed to reuinte streams for closing").close().await;
+    tx.send(Message::text(msg)).await.expect("Failed to send closing message to websocket.");
+    futures::stream::SplitSink::reunite(tx, rx).expect("Failed to reuinte streams for closing").close().await.expect("Failed to reuinte and close websocket streams.");
 }
 
-pub async fn websocket(ws: WebSocket, unparsed_id: Option<usize>, db: DBPool, agents: ServerAgents) {
+pub async fn websocket(ws: WebSocket, id: usize, db: DBPool, agents: ServerAgents) {
     //Largely copied from the proof of concept, some adjustments should be made to improve it at some point.
     //Probably remove use of unbounded channels to ensure no memory leaks for long-running connected clients
     //sending a lot of messages.
 
-    let agent: crate::structs::Agent;
-    if let Some(id) = unparsed_id {
-        match Search::Id(id as i64).find(&db).await {
-            Ok(Some(a)) => {
-                if let Err(e) = update_agent(&db, &(id as i64), AgentUpdateRequest::new(chrono::offset::Utc::now())).await {
-                    return close_ws_conn(ws, format!("Error: {}", e).as_str()).await;
-                };
-                agent = a;
-            },
-            Ok(None) => return close_ws_conn(ws, "User attempted to connect with incorrect id.").await,
-            Err(e) => return close_ws_conn(ws, format!("Error: {}", e).as_str()).await,
-        }
-    } else {
-        //This is a new user registration
-        let new_agent = crate::structs::AgentRequest::new(uuid::Uuid::new_v4().to_string());
-        agent = match add_agent(&db, new_agent).await {
-            Ok(f) => f,
-            Err(e) => return close_ws_conn(ws, format!("Failed to register new user: {}", e).as_str()).await,
-        }
-    }
+    let agent = match Search::Id(id).find(&db).await {
+        Ok(Some(a)) => {
+            if let Err(e) = update_agent(&db, &id, AgentUpdateRequest::new(chrono::offset::Utc::now())).await {
+                return close_ws_conn(ws, format!("Error adding new agent: {} agent: {}", e, a).as_str()).await;
+            };
+            a
+        },
+        Ok(None) => return close_ws_conn(ws, "User attempted to connect with incorrect id.").await,
+        Err(e) => return close_ws_conn(ws, format!("Error: {}", e).as_str()).await,
+    };
 
     let (mut user_ws_tx, mut user_ws_rx) = ws.split();
 
@@ -142,7 +138,7 @@ pub async fn websocket(ws: WebSocket, unparsed_id: Option<usize>, db: DBPool, ag
 
     while let Some(result) = user_ws_rx.next().await {
         let msg = match result {
-            Ok(msg) => msg,
+            Ok(m) => m,
             Err(e) => {
                 eprintln!("websocket error(uid={}): {}", agent.id(), e);
                 break;
@@ -151,8 +147,13 @@ pub async fn websocket(ws: WebSocket, unparsed_id: Option<usize>, db: DBPool, ag
         //This function will handle anything received by this server client over the websocket.
         //For the purposes of this demo, we're going to just burn the input.
         eprintln!("Message received from client: {}, content: {:?}", agent.id(), msg);
-    }
 
+        match MessageResponse::try_from(String::default()).unwrap() {
+            MessageResponse::Created(s) => "",
+
+        };
+    }
+    
     //Server Disconnected
     eprintln!("good bye server: {}", agent.id());
     agents.write().await.remove(&(agent.id() as usize));
