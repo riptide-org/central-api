@@ -17,7 +17,7 @@ pub type DBPool = Pool<PgConnectionManager<NoTls>>;
 
 pub trait FromDataBase: Sized {
     type Error: Send + std::fmt::Debug + Into<Error>;
-    fn from_database(data: Row) -> Result<Self, Self::Error>;
+    fn from_database(data: &Row) -> Result<Self, Self::Error>;
 }
 
 pub fn create_pool() -> Result<DBPool, mobc::Error<tokio_postgres::Error>> {
@@ -37,17 +37,59 @@ pub async fn get_db_con(pool: &DBPool) -> Result<DBCon, Error> {
 
 pub async fn init_db(pool: &DBPool) -> Result<(), Error> {
     let init_file = fs::read_to_string(INIT_SQL)?;
-    let con = get_db_con(pool).await?;
-    con
+    let conn = get_db_con(pool).await?;
+    conn
         .batch_execute(&init_file)
         .await
         .map_err(Error::DBInitError)?;
     Ok(())
 }
 
-pub async fn create_agent(db_pool: &DBPool, body: AgentRequest) -> Result<impl FromDataBase, Error> {
-    let con = get_db_con(db_pool).await?;
-    let row = con.query_one("
+// CREATE TABLE IF NOT EXISTS agents
+// (
+//     id BIGSERIAL PRIMARY KEY NOT NULL,
+//     created_at timestamp with time zone DEFAULT (now() at time zone 'utc'),
+//     last_signin timestamp with time zone DEFAULT (now() at time zone 'utc'),
+//     unique_id text --Generated from the hardware the server agent is running on.
+// );
+
+pub enum Search {
+    Id(i64),
+    unique_id(String),
+}
+
+impl Search {
+    fn get_search_term(self) -> String {
+        match self {
+            Search::Id(i) => format!("{} = {}", "id", i),
+            Search::unique_id(s) => format!("{} = '{}'", "unique_id", s),
+        }
+    }
+
+    pub async fn find(self, db_pool: &DBPool) -> Result<Option<Agent>, Error> {
+        let mut s = search_database(db_pool, self).await?;
+        if s.is_empty() {
+            return Ok(None)
+        }
+        Ok(Some(s.remove(0)))
+    }
+}
+
+async fn search_database(db_pool: &DBPool, search: Search) -> Result<Vec<Agent>, Error> {
+    let conn = get_db_con(db_pool).await?;
+
+    let rows = conn.query(format!("
+        SELECT * from agents
+        WHERE {}
+        ORDER BY created_at DESC
+    ", search.get_search_term()).as_str(), &[]).await.map_err(Error::DBQueryError)?;
+
+    rows.iter().map(|r| Agent::from_database(r)).collect()
+}
+
+pub async fn add_agent(db_pool: &DBPool, body: AgentRequest) -> Result<Agent, Error> {
+    let conn = get_db_con(db_pool).await?;
+    let row = conn.query_one("
         INSERT INTO agents (unique_id)
         VALUES ($1)
         RETURNING *;
@@ -55,28 +97,28 @@ pub async fn create_agent(db_pool: &DBPool, body: AgentRequest) -> Result<impl F
         .await
         .map_err(Error::DBQueryError)?;
 
-    Agent::from_database(row)
+    Agent::from_database(&row)
 }
 
-pub async fn update_agent(db_pool: &DBPool, id: &i64, body: AgentUpdateRequest) -> Result<impl FromDataBase, Error> {
-    let con = get_db_con(db_pool).await?;
-    let row = con
+pub async fn update_agent(db_pool: &DBPool, id: &i64, body: AgentUpdateRequest) -> Result<Agent, Error> {
+    let conn = get_db_con(db_pool).await?;
+    let row = conn
         .query_one("
             UPDATE agents
             SET last_signin = $1
             WHERE id = $2
             RETURNING *;
-        ", &[body.last_signin(), id])
+        ", &[&body.last_signin(), id])
         .await
         .map_err(Error::DBQueryError)?;
 
-    Agent::from_database(row)
+    Agent::from_database(&row)
 }
 
 #[allow(dead_code)]
 pub async fn delete_agent(db_pool: &DBPool, id: &i64) -> Result<u64, Error> {
-    let con = get_db_con(db_pool).await?;
-    con
+    let conn = get_db_con(db_pool).await?;
+    conn
         .execute("
             DELETE FROM agents
             WHERE id = $1
