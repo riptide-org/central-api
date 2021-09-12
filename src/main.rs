@@ -1,8 +1,8 @@
 /*
     Author: Josiah Bull
 
-    This application is the central api of the file sharing system. 
-    It aims to fufill the following basic spec: 
+    This application is the central api of the file sharing system.
+    It aims to fufill the following basic spec:
     - Accept websocket connections from server agent
         - Should issue a persistent ID for that server agent.
         - Ext, fingerprint the server agent in some way and store that data?
@@ -19,35 +19,35 @@
 */
 
 mod db;
-mod handler;
 mod error;
+mod handler;
 mod structs;
 
 use std::collections::HashMap;
-use std::sync::{
-    atomic::{AtomicUsize},
-    Arc,
-};
+use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use std::convert::Infallible;
 use warp::{path, Filter};
 
-use warp::ws::{Message};
+use bytes::Bytes;
 use futures::stream::BoxStream;
-use bytes::{Bytes};
+use warp::ws::Message;
 
 use std::net::SocketAddr;
 
 type ServerAgents = Arc<RwLock<HashMap<usize, mpsc::UnboundedSender<Message>>>>;
-type PendingStreams = Arc<RwLock<HashMap<usize, oneshot::Sender<Result<Box<dyn warp::Reply>, warp::http::Error>>>>>;
+type PendingStreams =
+    Arc<RwLock<HashMap<usize, oneshot::Sender<Result<Box<dyn warp::Reply>, warp::http::Error>>>>>;
 
 static NEXT_STREAM_ID: AtomicUsize = AtomicUsize::new(0);
 
 const SERVER_IP: &str = "127.0.0.1:3030";
 const REQUEST_TIMEOUT_THRESHOLD: u64 = 5000; //millis
 
-fn with_db(db_pool: db::DBPool) -> impl Filter<Extract = (db::DBPool,), Error = Infallible> + Clone {
+fn with_db(
+    db_pool: db::DBPool,
+) -> impl Filter<Extract = (db::DBPool,), Error = Infallible> + Clone {
     warp::any().map(move || db_pool.clone())
 }
 
@@ -99,7 +99,7 @@ async fn main() {
         .and(warp::filters::body::stream())
         .and(streams.clone())
         .and_then(handler::upload);
-    
+
     let download = warp::get()
         .and(path("download"))
         .and(path::param::<usize>())
@@ -113,11 +113,10 @@ async fn main() {
         .and(path("heartbeat"))
         .and(path::end())
         .and_then(handler::heartbeat);
-    
-    let catcher = warp::any()
-        .map(|| {
-            warp::reply::with_status("Not Found", warp::hyper::StatusCode::from_u16(404).unwrap())
-        });
+
+    let catcher = warp::any().map(|| {
+        warp::reply::with_status("Not Found", warp::hyper::StatusCode::from_u16(404).unwrap())
+    });
 
     //TODO implement this propery (i.e. have things behind a 'v1' flag if we ever need to update the api)
     let routes = heartbeat
@@ -131,6 +130,10 @@ async fn main() {
         .recover(error::handle_rejection);
 
     warp::serve(routes)
-        .run(SERVER_IP.parse::<SocketAddr>().expect("Failed to parse address"))
+        .run(
+            SERVER_IP
+                .parse::<SocketAddr>()
+                .expect("Failed to parse address"),
+        )
         .await;
 }

@@ -1,7 +1,7 @@
-use serde::{Serialize, Deserialize};
-use chrono::prelude::*;
 use crate::error::Error;
+use chrono::prelude::*;
 use mobc_postgres::tokio_postgres::Row;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Agent {
@@ -66,13 +66,11 @@ impl AgentUpdateRequest {
 
 #[derive(Serialize, Debug)]
 pub struct JsonResponse {
-    message: String
+    message: String,
 }
 
 impl JsonResponse {
     pub fn new(m: String) -> Self {
-        JsonResponse {
-            message: m
-        }
+        JsonResponse { message: m }
     }
 }

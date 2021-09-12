@@ -1,9 +1,9 @@
-use std::convert::Infallible;
-use std::fmt::{Formatter, self};
-use warp::{Reply, Rejection};
-use serde::{ Serialize};
-use warp::hyper::{Response as Builder, StatusCode, Body};
 use mobc_postgres::tokio_postgres;
+use serde::Serialize;
+use std::convert::Infallible;
+use std::fmt::{self, Formatter};
+use warp::hyper::{Body, Response as Builder, StatusCode};
+use warp::{Rejection, Reply};
 
 pub enum Error {
     DBPoolError(mobc::Error<tokio_postgres::Error>),
@@ -31,48 +31,48 @@ pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply,
 
     //Todo could replace with match statement using request guards
     if err.is_not_found() {
-            code = StatusCode::NOT_FOUND;
-            message = "Not Found";
+        code = StatusCode::NOT_FOUND;
+        message = "Not Found";
     } else if let Some(_) = err.find::<warp::filters::body::BodyDeserializeError>() {
-            code = StatusCode::BAD_REQUEST;
-            message = "Invalid Body";
+        code = StatusCode::BAD_REQUEST;
+        message = "Invalid Body";
     } else if let Some(e) = err.find::<Error>() {
-            match e {
-                Error::DBQueryError(_) => {
-                    code = StatusCode::BAD_REQUEST;
-                    message = "Could not Execute request";
-                }
-                _ => {
-                    eprintln!("unhandled application error: {:?}", err);
-                    code = StatusCode::INTERNAL_SERVER_ERROR;
-                    message = "Internal Server Error";
-                }
+        match e {
+            Error::DBQueryError(_) => {
+                code = StatusCode::BAD_REQUEST;
+                message = "Could not Execute request";
             }
+            _ => {
+                eprintln!("unhandled application error: {:?}", err);
+                code = StatusCode::INTERNAL_SERVER_ERROR;
+                message = "Internal Server Error";
+            }
+        }
     } else if let Some(_) = err.find::<warp::reject::MethodNotAllowed>() {
-            code = StatusCode::METHOD_NOT_ALLOWED;
-            message = "Method Not Allowed";
+        code = StatusCode::METHOD_NOT_ALLOWED;
+        message = "Method Not Allowed";
     } else {
-            eprintln!("unhandled error: {:?}", err);
-            code = StatusCode::INTERNAL_SERVER_ERROR;
-            message = "Internal Server Error";
+        eprintln!("unhandled error: {:?}", err);
+        code = StatusCode::INTERNAL_SERVER_ERROR;
+        message = "Internal Server Error";
     }
 
     let json = warp::reply::json(&ErrorMessage {
-        message: message.to_owned()
+        message: message.to_owned(),
     });
     Ok(warp::reply::with_status(json, code))
 }
 
 #[derive(Debug, Serialize)]
 struct ErrorMessage {
-    message: String
+    message: String,
 }
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match *&self {
             Error::DBInitError(e) => f.write_str(&e.to_string()),
-            _ => f.write_str("Server error occured")
+            _ => f.write_str("Server error occured"),
         }
     }
 }
