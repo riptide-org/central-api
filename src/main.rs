@@ -25,22 +25,22 @@ mod structs;
 
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicUsize},
     Arc,
 };
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use std::convert::Infallible;
-use warp::{path, Filter, Rejection};
+use warp::{path, Filter};
 
-use warp::ws::{Message, WebSocket};
+use warp::ws::{Message};
 use futures::stream::BoxStream;
 use bytes::{Bytes};
 
 use std::net::SocketAddr;
 
 type ServerAgents = Arc<RwLock<HashMap<usize, mpsc::UnboundedSender<Message>>>>;
-type PendingStreams = Arc<RwLock<HashMap<usize, oneshot::Sender<BoxStream<'static, Result<Bytes, warp::Error>>>>>>;
+type PendingStreams = Arc<RwLock<HashMap<usize, oneshot::Sender<Result<Box<dyn warp::Reply>, warp::http::Error>>>>>;
 
 static NEXT_STREAM_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -64,15 +64,22 @@ async fn main() {
     let agents = warp::any().map(move || agents.clone());
     let streams = warp::any().map(move || streams.clone());
 
+    let meta = warp::get()
+        .and(path("get-meta"))
+        .and(path::param::<usize>())
+        .and(path::param::<uuid::Uuid>())
+        .and(path::end())
+        .and(agents.clone())
+        .and(streams.clone())
+        .and_then(handler::get_meta);
+
     let ws_register = warp::post()
         .and(path("ws-register"))
         .and(path::end())
-        //Limit content bodies to 8kb
-        .and(warp::body::content_length_limit(1024 * 8))
+        .and(warp::body::content_length_limit(1024 * 8)) //Limit content bodies to 8kb
         .and(warp::body::json::<structs::AgentRequest>())
         .and(with_db(db_pool.clone()))
         .and_then(handler::register_websocket);
-
 
     let ws = path("ws")
         .and(path::param::<usize>())
@@ -80,8 +87,9 @@ async fn main() {
         .and(warp::ws())
         .and(with_db(db_pool.clone()))
         .and(agents.clone())
-        .map(|id: usize, ws: warp::ws::Ws, db, a| {
-            ws.on_upgrade(move |s| handler::websocket(s, id, db, a))
+        .and(streams.clone())
+        .map(|id: usize, ws: warp::ws::Ws, db, a, b| {
+            ws.on_upgrade(move |s| handler::websocket(s, id, db, a, b))
         });
 
     let upload = warp::post()
@@ -94,8 +102,8 @@ async fn main() {
     
     let download = warp::get()
         .and(path("download"))
-        .and(path::param())
-        .and(path::param())
+        .and(path::param::<usize>())
+        .and(path::param::<uuid::Uuid>())
         .and(path::end())
         .and(agents)
         .and(streams.clone())
@@ -115,6 +123,7 @@ async fn main() {
     let routes = heartbeat
         .or(ws_register)
         .or(ws)
+        .or(meta)
         .or(upload)
         .or(download)
         .or(catcher)

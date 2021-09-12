@@ -2,7 +2,6 @@ use serde::{Serialize, Deserialize};
 use chrono::prelude::*;
 use crate::error::Error;
 use mobc_postgres::tokio_postgres::Row;
-use std::convert::TryFrom;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Agent {
@@ -65,23 +64,15 @@ impl AgentUpdateRequest {
     }
 }
 
-#[derive(Serialize)]
-pub enum MessageResponse {
-    Error(String),
-    Message(String),
-    Created(String),
+#[derive(Serialize, Debug)]
+pub struct JsonResponse {
+    message: String
 }
 
-impl std::convert::TryFrom<String> for MessageResponse {
-    type Error = Error;
-    fn try_from(s: String) -> Result<MessageResponse, Error> {
-        let mut s = s.split(" ").collect::<Vec<&str>>();
-        let t: &str = s.remove(0);
-        return match t {
-            "Error" => Ok(MessageResponse::Error(s.join(""))),
-            "Message" => Ok(MessageResponse::Message(s.join(""))),
-            "Created" => Ok(MessageResponse::Created(s.join(""))),
-            _ => Err(format!("Unexpected message response recieved! Response: {} {:?}", t, s)),
+impl JsonResponse {
+    pub fn new(m: String) -> Self {
+        JsonResponse {
+            message: m
         }
     }
 }

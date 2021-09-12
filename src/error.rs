@@ -4,7 +4,6 @@ use warp::{Reply, Rejection};
 use serde::{ Serialize};
 use warp::hyper::{Response as Builder, StatusCode, Body};
 use mobc_postgres::tokio_postgres;
-use crate::structs::MessageResponse;
 
 pub enum Error {
     DBPoolError(mobc::Error<tokio_postgres::Error>),
@@ -58,8 +57,15 @@ pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply,
             message = "Internal Server Error";
     }
 
-    let json = warp::reply::json(&MessageResponse::Error(message.into()));
+    let json = warp::reply::json(&ErrorMessage {
+        message: message.to_owned()
+    });
     Ok(warp::reply::with_status(json, code))
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorMessage {
+    message: String
 }
 
 impl fmt::Debug for Error {
