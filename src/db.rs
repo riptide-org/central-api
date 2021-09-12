@@ -1,3 +1,5 @@
+//! Contains all database functionality
+
 use crate::error::Error;
 use crate::structs::{Agent, AgentRequest, AgentUpdateRequest};
 use mobc::{Connection, Pool};
@@ -7,14 +9,22 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio_postgres::{Config, NoTls, Row};
 
+/// Maximum number of open db connections
 const DB_POOL_MAX_OPEN: u64 = 32;
+
+/// Maximum number of idle db connections
 const DB_POOL_MAX_IDLE: u64 = 8;
+
+/// How long we will wait for a db connection before timing out.
 const DB_POOL_TIMEOUT_SECONDS: u64 = 15;
+
+///The location of the initalisation file for the db.
 const INIT_SQL: &str = "./config/db.sql";
 
 pub type DBCon = Connection<PgConnectionManager<NoTls>>;
 pub type DBPool = Pool<PgConnectionManager<NoTls>>;
 
+///A value can be pulled from the databse if it has this trait implemented.
 pub trait FromDataBase: Sized {
     type Error: Send + std::fmt::Debug + Into<Error>;
     fn from_database(data: &Row) -> Result<Self, Self::Error>;
@@ -32,7 +42,7 @@ pub fn create_pool() -> Result<DBPool, mobc::Error<tokio_postgres::Error>> {
 }
 
 pub async fn get_db_con(pool: &DBPool) -> Result<DBCon, Error> {
-    pool.get().await.map_err(Error::DBPoolError)
+    pool.get().await.map_err(Error::DBPool)
 }
 
 pub async fn init_db(pool: &DBPool) -> Result<(), Error> {
@@ -40,20 +50,21 @@ pub async fn init_db(pool: &DBPool) -> Result<(), Error> {
     let conn = get_db_con(pool).await?;
     conn.batch_execute(&init_file)
         .await
-        .map_err(Error::DBInitError)?;
+        .map_err(Error::DBInit)?;
     Ok(())
 }
 
 pub enum Search {
     Id(usize),
-    unique_id(String),
+    #[allow(dead_code)]
+    UniqueId(String),
 }
 
 impl Search {
     fn get_search_term(self) -> String {
         match self {
             Search::Id(i) => format!("{} = {}", "id", i),
-            Search::unique_id(s) => format!("{} = '{}'", "unique_id", s),
+            Search::UniqueId(s) => format!("{} = '{}'", "unique_id", s),
         }
     }
 
@@ -83,7 +94,7 @@ async fn search_database(db_pool: &DBPool, search: Search) -> Result<Vec<Agent>,
             &[],
         )
         .await
-        .map_err(Error::DBQueryError)?;
+        .map_err(Error::DBQuery)?;
 
     rows.iter().map(|r| Agent::from_database(r)).collect()
 }
@@ -100,7 +111,7 @@ pub async fn add_agent(db_pool: &DBPool, body: AgentRequest) -> Result<Agent, Er
             &[&body.unique_id()],
         )
         .await
-        .map_err(Error::DBQueryError)?;
+        .map_err(Error::DBQuery)?;
 
     Agent::from_database(&row)
 }
@@ -122,7 +133,7 @@ pub async fn update_agent(
             &[&body.last_signin(), &(*id as i64)],
         )
         .await
-        .map_err(Error::DBQueryError)?;
+        .map_err(Error::DBQuery)?;
 
     Agent::from_database(&row)
 }
@@ -138,5 +149,5 @@ pub async fn delete_agent(db_pool: &DBPool, id: &usize) -> Result<u64, Error> {
         &[&(*id as i64)],
     )
     .await
-    .map_err(Error::DBQueryError)
+    .map_err(Error::DBQuery)
 }

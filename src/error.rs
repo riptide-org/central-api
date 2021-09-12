@@ -1,27 +1,32 @@
+//! Contains the error type used by this application
+//! which wraps many different types of suberrors, so we can return a consistent type.
+
 use mobc_postgres::tokio_postgres;
 use serde::Serialize;
 use std::convert::Infallible;
 use std::fmt::{self, Formatter};
-use warp::hyper::{Body, Response as Builder, StatusCode};
+use warp::hyper::StatusCode;
 use warp::{Rejection, Reply};
 
 pub enum Error {
-    DBPoolError(mobc::Error<tokio_postgres::Error>),
-    DBQueryError(tokio_postgres::Error),
-    DBInitError(tokio_postgres::Error),
-    ReadFileError(std::io::Error),
+    DBPool(mobc::Error<tokio_postgres::Error>),
+    DBQuery(tokio_postgres::Error),
+    DBInit(tokio_postgres::Error),
+    ReadFile(std::io::Error),
     NoStream,
     StreamTimeout,
-    StreamError(tokio::sync::oneshot::error::RecvError),
-    ServerError(String),
-    MessageError(String),
+    #[allow(dead_code)]
+    Stream(tokio::sync::oneshot::error::RecvError),
+    Server(String),
+    #[allow(dead_code)]
+    Message(String),
 }
 
 impl warp::reject::Reject for Error {}
 
 impl std::convert::From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Error {
-        Error::ReadFileError(e)
+        Error::ReadFile(e)
     }
 }
 
@@ -33,12 +38,12 @@ pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply,
     if err.is_not_found() {
         code = StatusCode::NOT_FOUND;
         message = "Not Found";
-    } else if let Some(_) = err.find::<warp::filters::body::BodyDeserializeError>() {
+    } else if err.find::<warp::filters::body::BodyDeserializeError>().is_some() {
         code = StatusCode::BAD_REQUEST;
         message = "Invalid Body";
     } else if let Some(e) = err.find::<Error>() {
         match e {
-            Error::DBQueryError(_) => {
+            Error::DBQuery(_) => {
                 code = StatusCode::BAD_REQUEST;
                 message = "Could not Execute request";
             }
@@ -48,7 +53,7 @@ pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply,
                 message = "Internal Server Error";
             }
         }
-    } else if let Some(_) = err.find::<warp::reject::MethodNotAllowed>() {
+    } else if err.find::<warp::reject::MethodNotAllowed>().is_some() {
         code = StatusCode::METHOD_NOT_ALLOWED;
         message = "Method Not Allowed";
     } else {
@@ -70,8 +75,8 @@ struct ErrorMessage {
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match *&self {
-            Error::DBInitError(e) => f.write_str(&e.to_string()),
+        match self {
+            Error::DBInit(e) => f.write_str(&e.to_string()),
             _ => f.write_str("Server error occured"),
         }
     }

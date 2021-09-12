@@ -3,6 +3,7 @@ use chrono::prelude::*;
 use mobc_postgres::tokio_postgres::Row;
 use serde::{Deserialize, Serialize};
 
+/// A valid server agent, and all relevant details thereof.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Agent {
     id: i64,
@@ -35,6 +36,7 @@ impl crate::db::FromDataBase for Agent {
     }
 }
 
+/// An agent request, usually for creating a new agent.
 #[derive(Deserialize)]
 pub struct AgentRequest {
     unique_id: String,
@@ -44,11 +46,13 @@ impl AgentRequest {
     pub fn unique_id(&self) -> &str {
         &self.unique_id
     }
+    #[allow(dead_code)]
     pub fn new(unique_id: String) -> Self {
         AgentRequest { unique_id }
     }
 }
 
+/// A request to the database, for updating purposes only.
 #[derive(Deserialize)]
 pub struct AgentUpdateRequest {
     last_signin: DateTime<Utc>,
@@ -64,6 +68,8 @@ impl AgentUpdateRequest {
     }
 }
 
+/// A simple response struct, used largely in the handlers for creating nicely
+/// formatted JSON responses.
 #[derive(Serialize, Debug)]
 pub struct JsonResponse {
     message: String,

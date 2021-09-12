@@ -1,14 +1,16 @@
+//! Contains all handlers which are mapped to the request endpoints on the public api.
+
 use crate::db::*;
 use crate::structs::*;
 use crate::{
     error::Error, PendingStreams, ServerAgents, NEXT_STREAM_ID, REQUEST_TIMEOUT_THRESHOLD,
     SERVER_IP,
 };
-use futures::{SinkExt, Stream, StreamExt, TryFutureExt};
+use futures::{SinkExt, StreamExt, TryFutureExt};
 use std::convert::TryFrom;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use warp::hyper::{Body, Response as Builder, StatusCode};
@@ -17,12 +19,15 @@ use warp::ws::{Message, WebSocket};
 use warp::{reply::Response, Rejection};
 use ws_com_framework::WebsocketMessage;
 
+/// Checks the health of various services in relation to the central api
 pub async fn heartbeat() -> Result<Response, Rejection> {
     //Should do a check of the database here too
-
+    //Maybe also enable an optional param to check on a specific server agent?
     Ok(warp::reply::Response::default())
 }
 
+/// The upload endpoint, designed to take a stream from a server agent and serve it
+/// to a waiting client.
 #[allow(unused_must_use)]
 pub async fn upload(
     stream_id: usize,
@@ -61,10 +66,12 @@ pub async fn upload(
         .body(Body::from("{\"message\": \"upload completed\"}")))
 }
 
+/// A helper function which removes a stream from the pending streams list.
 async fn cleanup(upload_id: usize, streams: PendingStreams) {
     streams.write().await.remove(&upload_id);
 }
 
+/// A handler to return metadata about a file to a user.
 pub async fn get_meta(
     agent_id: usize,
     file_id: uuid::Uuid,
@@ -86,6 +93,8 @@ pub async fn get_meta(
     __download(agent_id, file_id, agents, streams, send).await
 }
 
+/// A handler for clients to request a file download. Will send a message through the websocket to a server agent
+/// Who will then upload the fiel to the user.
 pub async fn download(
     agent_id: usize,
     file_id: uuid::Uuid,
@@ -105,6 +114,8 @@ pub async fn download(
     __download(agent_id, file_id, agents, streams, send).await
 }
 
+/// An internal helper function, which can generically be called to either get metadata, or to trigger a file upload
+/// depending on where it is called from.
 async fn __download<T>(
     agent_id: usize,
     file_id: uuid::Uuid,
@@ -126,7 +137,7 @@ where
         streams.write().await.insert(upload_id, tx);
         if let Err(e) = send(agent, file_id, upload_id) {
             cleanup(upload_id, streams).await;
-            return Err(reject::custom(Error::ServerError(e.to_string())));
+            return Err(reject::custom(Error::Server(e.to_string())));
         }
     } else {
         eprintln!(
@@ -147,6 +158,8 @@ where
     };
 }
 
+/// Called to register a new websocket. A client must provide a valid id for the registration to be succesful.
+/// This comes in the form of a string.
 pub async fn register_websocket(
     r: AgentRequest,
     db: DBPool,
@@ -163,7 +176,8 @@ pub async fn register_websocket(
     ))
 }
 
-async fn close_ws_conn(ws: WebSocket, msg: &str) -> () {
+/// A helper function to close a websocket connection, sending appropriate close signals in the process. 
+async fn close_ws_conn(ws: WebSocket, msg: &str) {
     eprintln!("{}", msg);
     let (mut tx, rx) = ws.split();
     tx.send(Message::text(msg))
@@ -176,6 +190,7 @@ async fn close_ws_conn(ws: WebSocket, msg: &str) -> () {
         .expect("Failed to reuinte and close websocket streams.");
 }
 
+/// Handles incoming websocket connections, validating them and splitting sink/stream into different threads.
 pub async fn websocket(
     ws: WebSocket,
     id: usize,
@@ -186,6 +201,8 @@ pub async fn websocket(
     //Largely copied from the proof of concept, some adjustments should be made to improve it at some point.
     //Probably remove use of unbounded channels to ensure no memory leaks for long-running connected clients
     //sending a lot of messages.
+
+    //Validate this websocket connection
     let agent = match Search::Id(id).find(&db).await {
         Ok(Some(a)) => {
             if let Err(e) = update_agent(
@@ -207,6 +224,7 @@ pub async fn websocket(
         Err(e) => return close_ws_conn(ws, format!("Error: {}", e).as_str()).await,
     };
 
+    //Split the streams up
     let (mut user_ws_tx, mut user_ws_rx) = ws.split();
 
     eprintln!("new server connected: {}", agent.id());
@@ -214,6 +232,7 @@ pub async fn websocket(
     let (tx, rx) = mpsc::unbounded_channel();
     let mut rx = UnboundedReceiverStream::new(rx);
 
+    //Handle sending information down the socket connection
     tokio::task::spawn(async move {
         while let Some(message) = rx.next().await {
             user_ws_tx
@@ -225,11 +244,13 @@ pub async fn websocket(
         }
     });
 
+    //List this server agent globally so that other requests may discover it.
     agents
         .write()
         .await
         .insert(agent.id().to_owned() as usize, tx);
 
+    //Handle messages recieved from the websocket, while it remains connected.
     while let Some(result) = user_ws_rx.next().await {
         let msg = match result {
             Ok(m) => m,
