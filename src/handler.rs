@@ -265,7 +265,7 @@ pub async fn websocket(
             Message::Error(e) => eprintln!("Error from agent id{}: '{:?}'", agent.id(), e),
             Message::Message(e) => {
                 println!("Message from agent id{}: '{}'", agent.id(), e)
-            }
+            },
             Message::File(f) => {
                 if let Some(channel) = streams.write().await.remove(&f.stream_id()) {
                     let json = warp::reply::json(&f);
@@ -276,7 +276,11 @@ pub async fn websocket(
                         ))))
                         .unwrap_or_else(|_| eprintln!("Failed to send data down channel"));
                 }
-            }
+            },
+            Message::Close(c) => {
+                println!("I was told to close! Message: {}", c);
+                break;
+            },
             _ => panic!(
                 "Recieved unknown request: {:?} from agent id{}! This shouldn't happen!",
                 msg,
