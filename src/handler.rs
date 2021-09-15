@@ -6,8 +6,7 @@ use crate::{
     error::Error, PendingStreams, ServerAgents, NEXT_STREAM_ID, REQUEST_TIMEOUT_THRESHOLD,
     SERVER_IP,
 };
-use futures::{SinkExt, StreamExt, TryFutureExt};
-use std::convert::TryFrom;
+use futures::{StreamExt, TryFutureExt};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -15,9 +14,10 @@ use tokio::time::timeout;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use warp::hyper::{Body, Response as Builder, StatusCode};
 use warp::reject;
-use warp::ws::{Message, WebSocket};
+use warp::ws::{WebSocket};
 use warp::{reply::Response, Rejection};
-use ws_com_framework::WebsocketMessage;
+use ws_com_framework::{Sender, Receiver};
+use ws_com_framework::message::{Message, FileRequest, FileUploadRequest};
 
 /// Checks the health of various services in relation to the central api
 pub async fn heartbeat() -> Result<Response, Rejection> {
@@ -84,10 +84,7 @@ pub async fn get_meta(
         upload_id: usize,
     ) -> Result<(), mpsc::error::SendError<Message>> {
         agent.send(
-            WebsocketMessage::Request(
-                ws_com_framework::FileRequest::new(file_id, upload_id).unwrap(),
-            )
-            .into(),
+            FileRequest::new(file_id, upload_id).unwrap().into()
         )
     }
     __download(agent_id, file_id, agents, streams, send).await
@@ -108,7 +105,7 @@ pub async fn download(
     ) -> Result<(), mpsc::error::SendError<Message>> {
         let url = format!("http://{}/upload/{}", SERVER_IP, &upload_id); //Could do with a toggle here for http vs https
         agent.send(
-            WebsocketMessage::Upload(ws_com_framework::FileUploadRequest::new(file_id, url)).into(),
+            FileUploadRequest::new(file_id, url).into(),
         )
     }
     __download(agent_id, file_id, agents, streams, send).await
@@ -125,7 +122,7 @@ async fn __download<T>(
 ) -> Result<impl warp::Reply, Rejection>
 where
     T: Fn(
-        &mpsc::UnboundedSender<Message>,
+        &tokio::sync::mpsc::UnboundedSender<Message>,
         uuid::Uuid,
         usize,
     ) -> Result<(), mpsc::error::SendError<Message>>,
@@ -179,11 +176,12 @@ pub async fn register_websocket(
 /// A helper function to close a websocket connection, sending appropriate close signals in the process. 
 async fn close_ws_conn(ws: WebSocket, msg: &str) {
     eprintln!("{}", msg);
-    let (mut tx, rx) = ws.split();
-    tx.send(Message::text(msg))
+    let (tx, rx) = ws.split();
+    let mut tx = Sender::new(tx);
+    tx.send(msg.to_owned())
         .await
         .expect("Failed to send closing message to websocket.");
-    futures::stream::SplitSink::reunite(tx, rx)
+    futures::stream::SplitSink::reunite(tx.underlying(), rx)
         .expect("Failed to reuinte streams for closing")
         .close()
         .await
@@ -224,10 +222,13 @@ pub async fn websocket(
         Err(e) => return close_ws_conn(ws, format!("Error: {}", e).as_str()).await,
     };
 
-    //Split the streams up
-    let (mut user_ws_tx, mut user_ws_rx) = ws.split();
 
     eprintln!("new server connected: {}", agent.id());
+
+    //Split the streams up
+    let (tx, rx) = ws.split();
+    let mut tx_cent = Sender::new(tx);
+    let mut rx_cent = Receiver::new(rx);
 
     let (tx, rx) = mpsc::unbounded_channel();
     let mut rx = UnboundedReceiverStream::new(rx);
@@ -235,10 +236,10 @@ pub async fn websocket(
     //Handle sending information down the socket connection
     tokio::task::spawn(async move {
         while let Some(message) = rx.next().await {
-            user_ws_tx
+            tx_cent
                 .send(message)
                 .unwrap_or_else(|e| {
-                    eprintln!("websocket send error: {}", e);
+                    eprintln!("websocket send error: {:?}", e);
                 })
                 .await;
         }
@@ -251,34 +252,21 @@ pub async fn websocket(
         .insert(agent.id().to_owned() as usize, tx);
 
     //Handle messages recieved from the websocket, while it remains connected.
-    while let Some(result) = user_ws_rx.next().await {
+    while let Some(result) = rx_cent.next().await {
         let msg = match result {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("websocket error(uid={}): {}", agent.id(), e);
+                eprintln!("websocket error(uid={}): {:?}", agent.id(), e);
                 break;
             }
         };
 
-        let msg: WebsocketMessage = match WebsocketMessage::try_from(msg.clone()) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!(
-                    "Received mangaled transmission from client: {}\nError: {}\nMessage: {:?}",
-                    agent.id(),
-                    e,
-                    msg
-                );
-                continue;
-            }
-        };
-
         match msg {
-            WebsocketMessage::Error(e) => eprintln!("Error from agent id{}: '{}'", agent.id(), e),
-            WebsocketMessage::Message(e) => {
+            Message::Error(e) => eprintln!("Error from agent id{}: '{:?}'", agent.id(), e),
+            Message::Message(e) => {
                 println!("Message from agent id{}: '{}'", agent.id(), e)
             }
-            WebsocketMessage::File(f) => {
+            Message::File(f) => {
                 if let Some(channel) = streams.write().await.remove(&f.stream_id()) {
                     let json = warp::reply::json(&f);
                     channel
@@ -290,7 +278,7 @@ pub async fn websocket(
                 }
             }
             _ => panic!(
-                "Recieved unknown request: {} from agent id{}! This shouldn't happen!",
+                "Recieved unknown request: {:?} from agent id{}! This shouldn't happen!",
                 msg,
                 agent.id()
             ),

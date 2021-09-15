@@ -13,8 +13,8 @@ use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::{mpsc, oneshot, RwLock};
 use std::convert::Infallible;
 use warp::{path, Filter};
-use warp::ws::Message;
 use std::net::SocketAddr;
+use ws_com_framework::Message;
 
 /// All currently connected server agents. Each server agent has a unique id, so there is no chance of collisions.
 type ServerAgents = Arc<RwLock<HashMap<usize, mpsc::UnboundedSender<Message>>>>;

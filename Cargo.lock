@@ -539,6 +539,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "macros"
+version = "0.1.0"
+dependencies = [
+ "syn",
+]
+
+[[package]]
 name = "matches"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1485,12 +1492,15 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 [[package]]
 name = "ws-com-framework"
 version = "0.1.0"
-source = "git+https://github.com/file-share-platform/ws-com-framework?rev=dcc28a4#dcc28a4e72fa1fecf0b81ba2b1e9a5dac7adf665"
 dependencies = [
+ "async-trait",
  "bincode",
  "chrono",
+ "futures",
+ "macros",
  "serde",
  "serde_derive",
+ "tokio",
  "uuid",
  "warp",
 ]
