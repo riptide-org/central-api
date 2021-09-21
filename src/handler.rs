@@ -2,10 +2,7 @@
 
 use crate::db::*;
 use crate::structs::*;
-use crate::{
-    error::Error, PendingStreams, ServerAgents, NEXT_STREAM_ID, REQUEST_TIMEOUT_THRESHOLD,
-    SERVER_IP,
-};
+use crate::{error::Error, PendingStreams, ServerAgents, NEXT_STREAM_ID, Config};
 use futures::{StreamExt, TryFutureExt};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -77,17 +74,19 @@ pub async fn get_meta(
     file_id: uuid::Uuid,
     agents: ServerAgents,
     streams: PendingStreams,
+    cfg: Config
 ) -> Result<impl warp::Reply, Rejection> {
     fn send(
         agent: &mpsc::UnboundedSender<Message>,
         file_id: uuid::Uuid,
         upload_id: usize,
+        _: &Config
     ) -> Result<(), mpsc::error::SendError<Message>> {
         agent.send(
             FileRequest::new(file_id, upload_id).unwrap().into()
         )
     }
-    __download(agent_id, file_id, agents, streams, send).await
+    __download(agent_id, file_id, agents, streams, send, cfg).await
 }
 
 /// A handler for clients to request a file download. Will send a message through the websocket to a server agent
@@ -97,18 +96,20 @@ pub async fn download(
     file_id: uuid::Uuid,
     agents: ServerAgents,
     streams: PendingStreams,
+    cfg: Config
 ) -> Result<impl warp::Reply, Rejection> {
     fn send(
         agent: &mpsc::UnboundedSender<Message>,
         file_id: uuid::Uuid,
         upload_id: usize,
+        cfg: &Config,
     ) -> Result<(), mpsc::error::SendError<Message>> {
-        let url = format!("http://{}/upload/{}", SERVER_IP, &upload_id); //Could do with a toggle here for http vs https
+        let url = format!("http://{}:{}/upload/{}", cfg.server_ip, cfg.server_port, &upload_id); //Could do with a toggle here for http vs https
         agent.send(
             FileUploadRequest::new(file_id, url).into(),
         )
     }
-    __download(agent_id, file_id, agents, streams, send).await
+    __download(agent_id, file_id, agents, streams, send, cfg).await
 }
 
 /// An internal helper function, which can generically be called to either get metadata, or to trigger a file upload
@@ -119,12 +120,14 @@ async fn __download<T>(
     agents: ServerAgents,
     streams: PendingStreams,
     send: T,
+    cfg: Config,
 ) -> Result<impl warp::Reply, Rejection>
 where
     T: Fn(
         &tokio::sync::mpsc::UnboundedSender<Message>,
         uuid::Uuid,
         usize,
+        &Config,
     ) -> Result<(), mpsc::error::SendError<Message>>,
 {
     let (tx, rx) = oneshot::channel();
@@ -132,7 +135,7 @@ where
 
     if let Some(agent) = agents.read().await.get(&agent_id) {
         streams.write().await.insert(upload_id, tx);
-        if let Err(e) = send(agent, file_id, upload_id) {
+        if let Err(e) = send(agent, file_id, upload_id, &cfg) {
             cleanup(upload_id, streams).await;
             return Err(reject::custom(Error::Server(e.to_string())));
         }
@@ -144,7 +147,7 @@ where
         return Err(warp::reject());
     };
 
-    return match timeout(Duration::from_millis(REQUEST_TIMEOUT_THRESHOLD), rx).await {
+    return match timeout(Duration::from_millis(cfg.request_timeout_threshold as u64), rx).await {
         Ok(f) => {
             Ok(f.unwrap()) //TODO error handling here
         }
@@ -257,7 +260,7 @@ pub async fn websocket(
             Ok(m) => m,
             Err(e) => {
                 eprintln!("websocket error(uid={}): {:?}", agent.id(), e);
-                break;
+                continue;
             }
         };
 

@@ -15,6 +15,7 @@ use std::convert::Infallible;
 use warp::{path, Filter};
 use std::net::SocketAddr;
 use ws_com_framework::Message;
+use std::env;
 
 /// All currently connected server agents. Each server agent has a unique id, so there is no chance of collisions.
 type ServerAgents = Arc<RwLock<HashMap<usize, mpsc::UnboundedSender<Message>>>>;
@@ -27,11 +28,52 @@ type PendingStreams =
 /// Tracks stream ids, assigning a unique id to each request.
 static NEXT_STREAM_ID: AtomicUsize = AtomicUsize::new(0);
 
-/// The IP of this server. Eventually should be loaded from disk.
-const SERVER_IP: &str = "127.0.0.1:3030";
+macro_rules! load_env {
+    ( $x:expr ) => {
+        match env::var($x) {
+            Ok(f) => {
+                match f.parse() {
+                    Ok(g) => g,
+                    Err(_) =>  panic!("Enviroment variable `{}` not found!", $x),
+                }
+            },
+            Err(_) => panic!("Enviroment variable `{}` not found!", $x)
+        }
+    };
+}
 
-/// The time before a pending request fails.
-const REQUEST_TIMEOUT_THRESHOLD: u64 = 5000; //millis
+#[derive(Clone)]
+pub struct Config {
+    server_ip: String,
+    server_port: u16,
+    database_ip: String,
+    database_port: u16,
+    request_timeout_threshold: usize,
+}
+
+impl Default for Config {
+    fn default() -> Config {
+        Config {
+            server_ip: String::from("127.0.0.1"), 
+            server_port: 3030,
+            database_ip: String::from("127.0.0.1"),
+            database_port: 7877,
+            request_timeout_threshold: 5000,
+        }
+    }
+}
+
+impl Config {
+    pub fn from_env() -> Config {
+        Config {
+            server_ip: load_env!("SERVER_IP"),
+            server_port: load_env!("SERVER_PORT"),
+            database_ip: load_env!("DATABASE_IP"),
+            database_port: load_env!("DATABASE_PORT"),
+            request_timeout_threshold: load_env!("REQUEST_TIMEOUT_THRESHOLD"),
+        }
+    }
+}
 
 fn with_db(
     db_pool: db::DBPool,
@@ -39,11 +81,22 @@ fn with_db(
     warp::any().map(move || db_pool.clone())
 }
 
+fn with_config(
+    cfg: Config,
+) -> impl Filter<Extract = (Config,), Error = Infallible> + Clone {
+    warp::any().map(move || cfg.clone())
+}
+
 #[tokio::main]
 async fn main() {
     pretty_env_logger::init();
 
-    let db_pool = db::create_pool().expect("failed to create db pool");
+    let cfg = match cfg!(debug_assertions) {
+        true => Config::default(),
+        false => Config::from_env(),
+    };
+
+    let db_pool = db::create_pool(&cfg).expect("failed to create db pool");
     db::init_db(&db_pool).await.expect("failed to initalize db");
 
     let agents = ServerAgents::default();
@@ -61,6 +114,7 @@ async fn main() {
         .and(path::end())
         .and(agents.clone())
         .and(streams.clone())
+        .and(with_config(cfg.clone()))
         .and_then(handler::get_meta);
 
     //Register a new server agent, get an id to connect across the websocket connection.
@@ -77,7 +131,7 @@ async fn main() {
         .and(path::param::<usize>())
         .and(path::end())
         .and(warp::ws())
-        .and(with_db(db_pool.clone()))
+        .and(with_db(db_pool))
         .and(agents.clone())
         .and(streams.clone())
         .map(|id: usize, ws: warp::ws::Ws, db, a, b| {
@@ -104,6 +158,7 @@ async fn main() {
         .and(path::end())
         .and(agents)
         .and(streams.clone())
+        .and(with_config(cfg.clone()))
         .and_then(handler::download);
 
     //Check if the server is up, and any relevant data about it
@@ -131,7 +186,7 @@ async fn main() {
 
     warp::serve(routes)
         .run(
-            SERVER_IP
+            format!("{}:{}", &cfg.server_ip, &cfg.server_port)
                 .parse::<SocketAddr>()
                 .expect("Failed to parse address"),
         )

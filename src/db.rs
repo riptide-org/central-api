@@ -1,13 +1,14 @@
 //! Contains all database functionality
 
 use crate::error::Error;
+use crate::Config;
 use crate::structs::{Agent, AgentRequest, AgentUpdateRequest};
 use mobc::{Connection, Pool};
 use mobc_postgres::{tokio_postgres, PgConnectionManager};
 use std::fs;
 use std::str::FromStr;
 use std::time::Duration;
-use tokio_postgres::{Config, NoTls, Row};
+use tokio_postgres::{Config as TokioConfig, NoTls, Row};
 
 /// Maximum number of open db connections
 const DB_POOL_MAX_OPEN: u64 = 32;
@@ -30,9 +31,8 @@ pub trait FromDataBase: Sized {
     fn from_database(data: &Row) -> Result<Self, Self::Error>;
 }
 
-pub fn create_pool() -> Result<DBPool, mobc::Error<tokio_postgres::Error>> {
-    let config = Config::from_str("postgres://postgres@127.0.0.1:7877/postgres")?; //TODO load this from config file
-
+pub fn create_pool(cfg: &Config) -> Result<DBPool, mobc::Error<tokio_postgres::Error>> {
+    let config = TokioConfig::from_str(format!("postgres://postgres@{}:{}/postgres", cfg.database_ip, cfg.database_port).as_ref())?;
     let manager = PgConnectionManager::new(config, NoTls);
     Ok(Pool::builder()
         .max_open(DB_POOL_MAX_OPEN)
