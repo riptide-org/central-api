@@ -105,11 +105,12 @@ async fn main() {
     let agents = warp::any().map(move || agents.clone());
     let streams = warp::any().map(move || streams.clone());
 
+
     // Get metadata for a file. Will return an error in the event that file does not exist,
     // or if the request timed out.
     let meta = warp::get()
-        .and(path("get-meta"))
         .and(path::param::<usize>())
+        .and(path("file"))
         .and(path::param::<uuid::Uuid>())
         .and(path::end())
         .and(agents.clone())
@@ -152,9 +153,9 @@ async fn main() {
     //Has potential to timeout or fail if a server agent is not online, does not exist
     //or does not send a valid data stream.
     let download = warp::get()
-        .and(path("download"))
         .and(path::param::<usize>())
         .and(path::param::<uuid::Uuid>())
+        .and(path("download"))
         .and(path::end())
         .and(agents)
         .and(streams.clone())
@@ -165,6 +166,7 @@ async fn main() {
     //Will allow checks on specific server agents, and checks on the database health
     let heartbeat = warp::any()
         .and(path("heartbeat"))
+        .and(warp::path::param::<usize>().map(Some).or_else(|_| async { Ok::<(Option<usize>,), std::convert::Infallible>((None,)) }))
         .and(path::end())
         .and_then(handler::heartbeat);
 
@@ -173,15 +175,25 @@ async fn main() {
         warp::reply::with_status("Not Found", warp::hyper::StatusCode::from_u16(404).unwrap())
     });
 
-    //TODO implement this propery (i.e. have things behind a 'v1' flag if we ever need to update the api)
-    let routes = heartbeat
-        .or(ws_register)
-        .or(ws)
+    let server = warp::path("server").and(
+        download
         .or(meta)
-        .or(upload)
-        .or(download)
-        .or(catcher)
-        .with(warp::cors().allow_any_origin())
+        .or(heartbeat)
+    );
+    let client = warp::path("client").and(
+        upload
+        .or(ws)
+        .or(ws_register)
+    );
+
+    let routes = warp::path("api")
+        .and(warp::path("v1"))
+        .and(
+            server
+            .or(client)
+            .or(catcher)
+        )
+        .with(warp::cors())
         .recover(error::handle_rejection);
 
     warp::serve(routes)

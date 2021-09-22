@@ -17,7 +17,7 @@ use ws_com_framework::{Sender, Receiver};
 use ws_com_framework::message::{Message, FileRequest, FileUploadRequest};
 
 /// Checks the health of various services in relation to the central api
-pub async fn heartbeat() -> Result<Response, Rejection> {
+pub async fn heartbeat(_: Option<usize>) -> Result<Response, Rejection> {
     //Should do a check of the database here too
     //Maybe also enable an optional param to check on a specific server agent?
     Ok(warp::reply::Response::default())
