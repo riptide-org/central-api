@@ -46,8 +46,13 @@ macro_rules! load_env {
 pub struct Config {
     server_ip: String,
     server_port: u16,
-    database_ip: String,
+
+    database_host: String,
     database_port: u16,
+    database_name: String,
+    database_user: String,
+    database_pass: String,
+
     request_timeout_threshold: usize,
 }
 
@@ -56,8 +61,13 @@ impl Default for Config {
         Config {
             server_ip: String::from("127.0.0.1"), 
             server_port: 3030,
-            database_ip: String::from("127.0.0.1"),
+
+            database_host: String::from("127.0.0.1"),
             database_port: 7877,
+            database_name: String::from("postgres"),
+            database_user: String::from("postgres"),
+            database_pass: String::from(""),
+
             request_timeout_threshold: 5000,
         }
     }
@@ -66,10 +76,15 @@ impl Default for Config {
 impl Config {
     pub fn from_env() -> Config {
         Config {
-            server_ip: load_env!("SERVER_IP"),
-            server_port: load_env!("SERVER_PORT"),
-            database_ip: load_env!("DATABASE_IP"),
-            database_port: load_env!("DATABASE_PORT"),
+            server_ip: load_env!("HOST"),
+            server_port: load_env!("PORT"),
+
+            database_host: load_env!("DB_HOST"),
+            database_port: load_env!("DB_PORT"),
+            database_name: load_env!("DB_NAME"),
+            database_user: load_env!("DB_USER"),
+            database_pass: load_env!("DB_PASS"),
+
             request_timeout_threshold: load_env!("REQUEST_TIMEOUT_THRESHOLD"),
         }
     }
@@ -169,6 +184,10 @@ async fn main() {
         .and(warp::path::param::<usize>().map(Some).or_else(|_| async { Ok::<(Option<usize>,), std::convert::Infallible>((None,)) }))
         .and(path::end())
         .and_then(handler::heartbeat);
+
+    let ping = warp::any()
+        .and(path("ping"))
+        .and_then(handler::ping);
 
     //404 handler
     let catcher = warp::any().map(|| {
