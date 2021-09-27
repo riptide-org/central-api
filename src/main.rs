@@ -53,6 +53,8 @@ pub struct Config {
     database_user: String,
     database_pass: String,
 
+    browser_base_url: String,
+
     request_timeout_threshold: usize,
 }
 
@@ -67,6 +69,8 @@ impl Default for Config {
             database_name: String::from("postgres"),
             database_user: String::from("postgres"),
             database_pass: String::from(""),
+
+            browser_base_url: String::from("http://localhost:3030"),
 
             request_timeout_threshold: 5000,
         }
@@ -84,6 +88,8 @@ impl Config {
             database_name: load_env!("DB_NAME"),
             database_user: load_env!("DB_USER"),
             database_pass: load_env!("DB_PASS"),
+
+            browser_base_url: load_env!("BROWSER_BASE_URL"),
 
             request_timeout_threshold: load_env!("REQUEST_TIMEOUT_THRESHOLD"),
         }
