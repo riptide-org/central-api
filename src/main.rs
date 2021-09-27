@@ -191,10 +191,6 @@ async fn main() {
         .and(path::end())
         .and_then(handler::heartbeat);
 
-    let ping = warp::any()
-        .and(path("ping"))
-        .and_then(handler::ping);
-
     //404 handler
     let catcher = warp::any().map(|| {
         warp::reply::with_status("Not Found", warp::hyper::StatusCode::from_u16(404).unwrap())
