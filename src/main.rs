@@ -9,7 +9,7 @@ mod handler;
 mod structs;
 
 use std::collections::HashMap;
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use std::convert::Infallible;
 use warp::{path, Filter};
@@ -23,10 +23,7 @@ type ServerAgents = Arc<RwLock<HashMap<usize, mpsc::UnboundedSender<Message>>>>;
 /// Requests from clients which are waiting for a response. The response can come from either an http request,
 /// or from a websocket.
 type PendingStreams =
-    Arc<RwLock<HashMap<usize, oneshot::Sender<Result<Box<dyn warp::Reply>, warp::http::Error>>>>>;
-
-/// Tracks stream ids, assigning a unique id to each request.
-static NEXT_STREAM_ID: AtomicUsize = AtomicUsize::new(0);
+    Arc<RwLock<HashMap<uuid::Uuid, oneshot::Sender<Result<Box<dyn warp::Reply>, warp::http::Error>>>>>;
 
 macro_rules! load_env {
     ( $x:expr ) => {
@@ -180,6 +177,7 @@ async fn main() {
         .or(meta)
         .or(heartbeat)
     );
+
     let client = warp::path("client").and(
         upload
         .or(ws)

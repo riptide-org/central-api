@@ -2,9 +2,8 @@
 
 use crate::db::*;
 use crate::structs::*;
-use crate::{error::Error, PendingStreams, ServerAgents, NEXT_STREAM_ID, Config};
+use crate::{error::Error, PendingStreams, ServerAgents, Config};
 use futures::{StreamExt, TryFutureExt};
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
@@ -14,7 +13,7 @@ use warp::reject;
 use warp::ws::{WebSocket};
 use warp::{reply::Response, Rejection};
 use ws_com_framework::{Sender, Receiver};
-use ws_com_framework::message::{Message, FileRequest, FileUploadRequest};
+use ws_com_framework::message::{Message, Request};
 
 /// Checks the health of various services in relation to the central api
 pub async fn heartbeat(_: Option<usize>) -> Result<Response, Rejection> {
@@ -27,7 +26,7 @@ pub async fn heartbeat(_: Option<usize>) -> Result<Response, Rejection> {
 /// to a waiting client.
 #[allow(unused_must_use)]
 pub async fn upload(
-    stream_id: usize,
+    stream_id: uuid::Uuid,
     data: impl futures::Stream<Item = Result<impl bytes::buf::Buf, warp::Error>>
         + std::marker::Send
         + 'static,
@@ -64,7 +63,7 @@ pub async fn upload(
 }
 
 /// A helper function which removes a stream from the pending streams list.
-async fn cleanup(upload_id: usize, streams: PendingStreams) {
+async fn cleanup(upload_id: uuid::Uuid, streams: PendingStreams) {
     streams.write().await.remove(&upload_id);
 }
 
@@ -79,11 +78,11 @@ pub async fn get_meta(
     fn send(
         agent: &mpsc::UnboundedSender<Message>,
         file_id: uuid::Uuid,
-        upload_id: usize,
+        upload_id: uuid::Uuid,
         _: &Config
     ) -> Result<(), mpsc::error::SendError<Message>> {
         agent.send(
-            FileRequest::new(file_id, upload_id).unwrap().into()
+            Message::MetadataRequest(Request::new(file_id, upload_id.to_string()))
         )
     }
     __download(agent_id, file_id, agents, streams, send, cfg).await
@@ -101,12 +100,12 @@ pub async fn download(
     fn send(
         agent: &mpsc::UnboundedSender<Message>,
         file_id: uuid::Uuid,
-        upload_id: usize,
+        upload_id: uuid::Uuid,
         cfg: &Config,
     ) -> Result<(), mpsc::error::SendError<Message>> {
         let url = format!("http://{}:{}/upload/{}", cfg.server_ip, cfg.server_port, &upload_id); //Could do with a toggle here for http vs https
         agent.send(
-            FileUploadRequest::new(file_id, url).into(),
+            Message::UploadRequest(Request::new(file_id, url))
         )
     }
     __download(agent_id, file_id, agents, streams, send, cfg).await
@@ -126,12 +125,12 @@ where
     T: Fn(
         &tokio::sync::mpsc::UnboundedSender<Message>,
         uuid::Uuid,
-        usize,
+        uuid::Uuid,
         &Config,
     ) -> Result<(), mpsc::error::SendError<Message>>,
 {
     let (tx, rx) = oneshot::channel();
-    let upload_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
+    let upload_id = uuid::Uuid::new_v4();
 
     if let Some(agent) = agents.read().await.get(&agent_id) {
         streams.write().await.insert(upload_id, tx);
@@ -203,27 +202,23 @@ pub async fn websocket(
     //Probably remove use of unbounded channels to ensure no memory leaks for long-running connected clients
     //sending a lot of messages.
 
-    //Validate this websocket connection
+    //Check that this user exists and isn't online
     let agent = match Search::Id(id).find(&db).await {
         Ok(Some(a)) => {
-            if let Err(e) = update_agent(
-                &db,
-                &id,
-                AgentUpdateRequest::new(chrono::offset::Utc::now()),
-            )
-            .await
-            {
+            //Agent exists, but we need to check they aren't already logged in
+            if agents.read().await.contains_key(&id) {
                 return close_ws_conn(
                     ws,
-                    format!("Error adding new agent: {} agent: {}", e, a).as_str(),
+                    format!("Error, agent {} attempted to connect twice!", &a).as_str(),
                 )
                 .await;
-            };
+            }
             a
         }
         Ok(None) => return close_ws_conn(ws, "User attempted to connect with incorrect id.").await,
         Err(e) => return close_ws_conn(ws, format!("Error: {}", e).as_str()).await,
     };
+
 
 
     eprintln!("new server connected: {}", agent.id());
@@ -232,6 +227,39 @@ pub async fn websocket(
     let (tx, rx) = ws.split();
     let mut tx_cent = Sender::new(tx);
     let mut rx_cent = Receiver::new(rx);
+
+    //Carry out authentication
+    tx_cent.send(Message::AuthReq).await;
+    if let Some(auth) = rx_cent.next().await {
+        let auth = match auth {
+            Ok(f) => f,
+            Err(e) => {
+                return println!("Error trying to validate user agent {}, garbled input recieved: {:?}", &id, e);
+            },
+        };
+
+        if let Message::AuthResponse(res) = auth {
+            if &res.key != agent.unique_id() {
+                return println!("Websocket {} sent incorrect secure key, unable to validate!", &id);
+            }
+        } else {
+            return println!("Websocket {} sent invalid data down pipeline. Recieved message {:?} instead of auth request.", &id, auth);
+        }
+    } else {
+        return println!("Websocket {} disconnected before performing validation handshake!", &id);
+    }
+
+    //Update db as this account has succesfully logged in
+    if let Err(e) = update_agent(
+        &db,
+        &id,
+        AgentUpdateRequest::new(chrono::offset::Utc::now()),
+    )
+    .await
+    {
+        return println!("Error {} updating agent {} most recent login", e, &id);
+    };
+
 
     let (tx, rx) = mpsc::unbounded_channel();
     let mut rx = UnboundedReceiverStream::new(rx);
@@ -269,9 +297,17 @@ pub async fn websocket(
             Message::Message(e) => {
                 println!("Message from agent id{}: '{}'", agent.id(), e)
             },
-            Message::File(f) => {
-                if let Some(channel) = streams.write().await.remove(&f.stream_id()) {
-                    let json = warp::reply::json(&f);
+            Message::MetadataResponse(f) => {
+                let uuid = match uuid::Uuid::parse_str(f.get_stream_id()) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        println!("Unable to parse uuid sent by client {} for metadata response. Cannot direct this request!", &id);
+                        continue;
+                    },
+                };
+
+                if let Some(channel) = streams.write().await.remove(&uuid) {
+                    let json = warp::reply::json(&f.get_payload());
                     channel
                         .send(Ok(Box::new(warp::reply::with_status(
                             json,

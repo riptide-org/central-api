@@ -102,13 +102,12 @@ async fn search_database(db_pool: &DBPool, search: Search) -> Result<Vec<Agent>,
 pub async fn add_agent(db_pool: &DBPool, body: AgentRequest) -> Result<Agent, Error> {
     let conn = get_db_con(db_pool).await?;
     let row = conn
-        .query_one(
-            "
+        .query_one("
         INSERT INTO agents (unique_id)
         VALUES ($1)
         RETURNING *;
-    ",
-            &[&body.unique_id()],
+        ",
+            &[&body.unique_id().as_bytes()],
         )
         .await
         .map_err(Error::DBQuery)?;

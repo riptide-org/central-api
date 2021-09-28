@@ -806,7 +806,6 @@ dependencies = [
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+https://github.com/file-share-platform/ws-com-framework?rev=7235ad2#7235ad2156a2740aed20fc67f6d1864cc9601103"
 dependencies = [
  "syn",
 ]
@@ -2428,7 +2427,6 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 [[package]]
 name = "ws-com-framework"
 version = "0.1.0"
-source = "git+https://github.com/file-share-platform/ws-com-framework?rev=7235ad2#7235ad2156a2740aed20fc67f6d1864cc9601103"
 dependencies = [
  "async-trait",
  "bincode",

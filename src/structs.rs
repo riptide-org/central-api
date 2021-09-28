@@ -9,18 +9,22 @@ pub struct Agent {
     id: i64,
     created_at: DateTime<Utc>, //TODO, do we even need to write this to the db? We could have serde skip it.
     last_signin: DateTime<Utc>,
-    unique_id: String,
+    unique_id: Vec<u8>,
 }
 
 impl Agent {
     pub fn id(&self) -> i64 {
         self.id
     }
+
+    pub fn unique_id(&self) -> &Vec<u8> {
+        &self.unique_id
+    }
 }
 
 impl std::fmt::Display for Agent {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(&format!("id: {}, unique_id: {}", self.id, self.unique_id))
+        f.write_str(&format!("id: {}, unique_id: {:?}", self.id, self.unique_id))
     }
 }
 
