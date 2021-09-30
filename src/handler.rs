@@ -229,7 +229,8 @@ pub async fn websocket(
     let mut rx_cent = Receiver::new(rx);
 
     //Carry out authentication
-    tx_cent.send(Message::AuthReq).await;
+    //TODO put this in it's own function
+    tx_cent.send(Message::AuthReq).await.expect("Unable to send authreq");
     if let Some(auth) = rx_cent.next().await {
         let auth = match auth {
             Ok(f) => f,
@@ -300,7 +301,7 @@ pub async fn websocket(
             Message::MetadataResponse(f) => {
                 let uuid = match uuid::Uuid::parse_str(f.get_stream_id()) {
                     Ok(f) => f,
-                    Err(e) => {
+                    Err(_) => {
                         println!("Unable to parse uuid sent by client {} for metadata response. Cannot direct this request!", &id);
                         continue;
                     },
