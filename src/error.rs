@@ -38,7 +38,10 @@ pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply,
     if err.is_not_found() {
         code = StatusCode::NOT_FOUND;
         message = "Not Found";
-    } else if err.find::<warp::filters::body::BodyDeserializeError>().is_some() {
+    } else if err
+        .find::<warp::filters::body::BodyDeserializeError>()
+        .is_some()
+    {
         code = StatusCode::BAD_REQUEST;
         message = "Invalid Body";
     } else if let Some(e) = err.find::<Error>() {
@@ -77,6 +80,7 @@ impl fmt::Debug for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Error::DBInit(e) => f.write_str(&e.to_string()),
+            Error::DBQuery(e) => f.write_str(&e.to_string()),
             _ => f.write_str("Server error occured"),
         }
     }
