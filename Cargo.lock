@@ -94,9 +94,6 @@ dependencies = [
  "mobc",
  "mobc-postgres",
  "rand 0.8.4",
- "serde",
- "serde_derive",
- "serde_json",
  "sha2",
  "tokio",
  "tokio-stream",
@@ -1064,15 +1061,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e51e73328dc4ac0c7ccbda3a494dfa03df1de2f46018127f60c693f2648455b0"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "siphasher"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1184,19 +1172,16 @@ dependencies = [
  "memchr",
  "mio",
  "num_cpus",
- "once_cell",
- "parking_lot",
  "pin-project-lite",
- "signal-hook-registry",
  "tokio-macros",
  "winapi",
 ]
 
 [[package]]
 name = "tokio-macros"
-version = "1.3.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54473be61f4ebe4efd09cec9bd5d16fa51d70ea0192213d754d2d500457db110"
+checksum = "154794c8f499c2619acd19e839294703e9e32e7630ef5f46ea80d4ef0fbee5eb"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -1,13 +1,12 @@
 use crate::error::Error;
 use chrono::prelude::*;
 use mobc_postgres::tokio_postgres::Row;
-use serde::{Deserialize, Serialize};
 
 /// A valid server agent, and all relevant details thereof.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct Agent {
     public_id: String,
-    created_at: DateTime<Utc>, //TODO, do we even need to write this to the db? We could have serde skip it.
+    created_at: DateTime<Utc>,
     last_signin: DateTime<Utc>,
     secure_key_hashed: String,
 }
@@ -77,7 +76,6 @@ impl Default for AgentRequest {
 }
 
 /// A request to the database, for updating purposes only.
-#[derive(Deserialize)]
 pub struct AgentUpdateRequest {
     last_signin: DateTime<Utc>,
 }
