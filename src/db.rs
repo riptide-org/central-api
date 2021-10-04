@@ -1,8 +1,8 @@
 //! Contains all database functionality
 
 use crate::error::Error;
-use crate::Config;
 use crate::structs::{Agent, AgentRequest, AgentUpdateRequest};
+use crate::Config;
 use mobc::{Connection, Pool};
 use mobc_postgres::{tokio_postgres, PgConnectionManager};
 use std::fs;
@@ -61,16 +61,16 @@ pub async fn init_db(pool: &DBPool) -> Result<(), Error> {
 }
 
 pub enum Search {
-    Id(usize),
     #[allow(dead_code)]
-    UniqueId(String),
+    Id(usize),
+    PublicId(String),
 }
 
 impl Search {
     fn get_search_term(self) -> String {
         match self {
             Search::Id(i) => format!("{} = {}", "id", i),
-            Search::UniqueId(s) => format!("{} = '{}'", "unique_id", s),
+            Search::PublicId(s) => format!("{} = '{}'", "public_id", s),
         }
     }
 
@@ -90,10 +90,10 @@ async fn search_database(db_pool: &DBPool, search: Search) -> Result<Vec<Agent>,
         .query(
             format!(
                 "
-        SELECT * from agents
-        WHERE {}
-        ORDER BY created_at DESC
-    ",
+                SELECT * from agents
+                WHERE {}
+                ORDER BY created_at DESC
+            ",
                 search.get_search_term()
             )
             .as_str(),
@@ -105,16 +105,16 @@ async fn search_database(db_pool: &DBPool, search: Search) -> Result<Vec<Agent>,
     rows.iter().map(|r| Agent::from_database(r)).collect()
 }
 
-pub async fn add_agent(db_pool: &DBPool, body: AgentRequest) -> Result<Agent, Error> {
+pub async fn add_agent(db_pool: &DBPool, body: &AgentRequest) -> Result<Agent, Error> {
     let conn = get_db_con(db_pool).await?;
     let row = conn
         .query_one(
             "
-        INSERT INTO agents (unique_id)
-        VALUES ($1)
-        RETURNING *;
-    ",
-            &[&body.unique_id()],
+            INSERT INTO agents (public_id, secure_key)
+            VALUES ($1, $2)
+            RETURNING *;
+        ",
+            &[&body.public_id(), &body.secure_key_hashed()],
         )
         .await
         .map_err(Error::DBQuery)?;
@@ -124,7 +124,7 @@ pub async fn add_agent(db_pool: &DBPool, body: AgentRequest) -> Result<Agent, Er
 
 pub async fn update_agent(
     db_pool: &DBPool,
-    id: &usize,
+    id: &str,
     body: AgentUpdateRequest,
 ) -> Result<Agent, Error> {
     let conn = get_db_con(db_pool).await?;
@@ -133,10 +133,10 @@ pub async fn update_agent(
             "
             UPDATE agents
             SET last_signin = $1
-            WHERE id = $2
+            WHERE public_id = $2
             RETURNING *;
         ",
-            &[&body.last_signin(), &(*id as i64)],
+            &[&body.last_signin(), &id],
         )
         .await
         .map_err(Error::DBQuery)?;
