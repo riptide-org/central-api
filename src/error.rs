@@ -2,7 +2,6 @@
 //! which wraps many different types of suberrors, so we can return a consistent type.
 
 use mobc_postgres::tokio_postgres;
-use serde::Serialize;
 use std::convert::Infallible;
 use std::fmt::{self, Formatter};
 use warp::hyper::StatusCode;
@@ -38,7 +37,10 @@ pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply,
     if err.is_not_found() {
         code = StatusCode::NOT_FOUND;
         message = "Not Found";
-    } else if err.find::<warp::filters::body::BodyDeserializeError>().is_some() {
+    } else if err
+        .find::<warp::filters::body::BodyDeserializeError>()
+        .is_some()
+    {
         code = StatusCode::BAD_REQUEST;
         message = "Invalid Body";
     } else if let Some(e) = err.find::<Error>() {
@@ -62,21 +64,19 @@ pub async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply,
         message = "Internal Server Error";
     }
 
-    let json = warp::reply::json(&ErrorMessage {
-        message: message.to_owned(),
-    });
-    Ok(warp::reply::with_status(json, code))
-}
+    let response = format!("{{ \"message\":\"{}\" }}", message);
 
-#[derive(Debug, Serialize)]
-struct ErrorMessage {
-    message: String,
+    Ok(warp::reply::with_status(
+        warp::reply::with_header(response, "content-type", "application/json"),
+        code,
+    ))
 }
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Error::DBInit(e) => f.write_str(&e.to_string()),
+            Error::DBQuery(e) => f.write_str(&e.to_string()),
             _ => f.write_str("Server error occured"),
         }
     }
