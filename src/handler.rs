@@ -104,13 +104,9 @@ pub async fn download(
         upload_id: &str,
         cfg: &Config,
     ) -> Result<(), mpsc::error::SendError<Message>> {
-        let http_variant = match cfg.secure {
-            true => "https",
-            false => "http",
-        };
         let url = format!(
-            "{}://{}/api/v1/client/upload/{}",
-            http_variant, cfg.server_ip, &upload_id
+            "{}/api/v1/client/upload/{}",
+            cfg.browser_base_url, &upload_id
         ); //Could do with a toggle here for http vs https
         agent.send(Message::UploadRequest(Request::new(
             file_id.to_owned(),

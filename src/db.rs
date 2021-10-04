@@ -6,9 +6,8 @@ use crate::Config;
 use mobc::{Connection, Pool};
 use mobc_postgres::{tokio_postgres, PgConnectionManager};
 use std::fs;
-use std::str::FromStr;
 use std::time::Duration;
-use tokio_postgres::{Config as TokioConfig, NoTls, Row};
+use tokio_postgres::{Config as TokioPGConfig, NoTls, Row};
 
 /// Maximum number of open db connections
 const DB_POOL_MAX_OPEN: u64 = 32;
@@ -32,10 +31,15 @@ pub trait FromDataBase: Sized {
 }
 
 pub fn create_pool(cfg: &Config) -> Result<DBPool, mobc::Error<tokio_postgres::Error>> {
-    let config = TokioConfig::from_str(
-        format!("postgres://postgres@{}/postgres", cfg.database_ip).as_ref(),
-    )?;
-    let manager = PgConnectionManager::new(config, NoTls);
+    let mut config = TokioPGConfig::new();
+    config
+        .host(&cfg.database_host)
+        .port(cfg.database_port)
+        .dbname(&cfg.database_name)
+        .user(&cfg.database_user)
+        .password(&cfg.database_pass);
+
+    let manager = PgConnectionManager::new(config.clone(), NoTls);
     Ok(Pool::builder()
         .max_open(DB_POOL_MAX_OPEN)
         .max_idle(DB_POOL_MAX_IDLE)
