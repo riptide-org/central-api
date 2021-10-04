@@ -198,7 +198,7 @@ async fn main() {
 
     warp::serve(routes)
         .run(
-            (&cfg.server_ip)
+            format!("{}:{}", cfg.server_ip, cfg.server_port)
                 .parse::<SocketAddr>()
                 .expect("Failed to parse address"),
         )
