@@ -1,0 +1,351 @@
+openapi: 3.0.0
+info:
+  description: Central API for the RipTide application. Handles communication between clients and agents, effectively acting as a translation layer between http and websockets.
+  version: "0.1.0"
+  license:
+    name: "MIT"
+    url: https://opensource.org/licenses/MIT
+  title: RipTide Central API
+  contact:
+    name: Josiah Bull
+    email: josiah.bull7@gmail.com
+
+components:
+  schemas:
+    ApiCredentials:
+      type: object
+      required:
+        - public_id
+        - private_key
+      properties:
+        public_id:
+          type: string
+          example: df863d
+          description: A 6-byte base-62 string, randomly generated. This is the public identifier that will be used for files stored by this client.
+        private_key:
+          type: string
+          example: Uk4nKFZhKW5jV2Vic1drUTtwK0p6Q09j
+          description: a 32-byte base-62 string, randomly generated. This is the private identifier for this api. It should not be used publically, as it is used during the authentication process between the api and a client over websockets.
+    Metadata:
+      type: object
+      required:
+        - user
+        - crt
+        - exp
+        - name
+        - size
+        - ext
+      properties:
+        user:
+          type: string
+          example: John
+          description: The name of the user who shared this file, as based on what their system username is. This can be faked, and should not be relied upon for acccurate identification.
+        crt:
+          type: string
+          #TODO example:
+          description: A timestamp representing when this file was first shared, UTC time.
+        exp:
+          type: string
+          #TODO example:
+          description: A timestamp representing when the share on this file will expire fully.
+        name:
+          type: string
+          example: presentation_slides
+          description: The name of the file in plain english, without the file extension.
+        size:
+          type: number
+          example: 562
+          description: The size of the file in bytes, this can be used to provide a download size estimate.
+        ext:
+          type: string
+          example: pdf
+          description: The extension of the file being sent. This does not guarentee that the file is of this type, merely that this was the extension given to it. It is possible for this to be empty if the file does not have a provided extension.
+    Error:
+      type: object
+      properties:
+        name:
+          type: string
+          example: Bad Request
+          description: A basic description of the error that occured.
+        status:
+          type: number
+          example: 400
+          description: A repeat of the statuscode provided with the response.
+        path:
+          type: string
+          example: GET /players
+          description: The path at which this request was made to before failing, including the type.
+        error:
+          type: object
+          properties:
+            location:
+              type: string
+              example: query.id
+              description: The location where the error was found.
+            message:
+              type: string
+              example: This id has been found to be banned!
+              description: A short message explaining what went wrong, providing clarity on how to fix it.
+    Info:
+      type: object
+      properties:
+        ready:
+          type: boolean
+          description: A simple boolean indicating whether the service is able to make requests.
+        message:
+          type: string
+          example: Online and Ready ;)
+          description: A status message about the current state, this could also include information about why it is offline.
+        uptime:
+          type: number
+          example: 156093
+          description: How long the service has been online for, in miliseconds.
+paths:
+  /info:
+    get:
+      summary: Get information about the Api.
+      description:  it's version, and current status. This check should be performed when your app first launches. This ensures that your app is not out of date with the api.
+      responses:
+        '200':
+          description: The CentralApi is fully functional.
+          content:
+            json/application:
+              schema:
+                $ref: '#/components/schemas/Info'
+      tags:
+        - Agent
+        - Client
+  /ws/{publicId}:
+    summary: This is the connection endpoint for clients wishing to open a websocket connection with the Api.
+    description:  Note that the api will send an authentication request and expect the correct private key for the provided public id. If you fail to provide this, the api will drop you.
+    get:
+      summary: Initiate a websocket connection
+      parameters:
+        - in: path
+          name: publicId
+          schema:
+            type: string
+          required: true
+          description: The unique public Id for this client as assigned by the API
+      responses:
+        '101':
+          description: Upgrade connection to websocket
+      tags:
+        - Agent
+  /ws/register:
+    post:
+      summary: Request a registration for a new Agent.
+      description: This does not require any credentials, and is free to use for anyone as it is extremely lightweight. This request cannot fail.
+      responses:
+        '200':
+          description: Credentials succesfully created.
+          content:
+            json/application:
+              schema:
+                $ref: '#/components/schemas/ApiCredentials'
+      tags:
+        - Agent
+  /agents:
+    summary: An endpoint which represents all Agents currently connected to the Api.
+    get:
+      summary: Get the list of all agents connected to the api.
+      responses:
+        '200':
+          description: Succesfully collected the list of agents connected to the api. May be empty.
+          content:
+            json/application:
+              schema:
+                type: array
+                items:
+                  type: string
+                  example: 3jd87c
+                  description: A string representing the id of a connected agent.
+      tags:
+        - Client
+  /agents/{agentId}:
+    summary: Get the status of a Server Agenet.
+    get:
+      description: Attempt to find a connected Agent and contact them for their status. This can fail, and all cases should be accounted for.
+      parameters:
+        - in: path
+          name: agentId
+          schema:
+            type: string
+          required: true
+          description: Unique public id of the Agent to find
+      responses:
+        '200':
+          description: Succesfully contacted the api for it's status, and it is ready to work.
+          content:
+            json/application:
+              schema:
+                $ref: '#/components/schemas/Info'
+              examples:
+                online:
+                  summary: Agent is online and ready
+                  value:
+                    ready: true
+                    message: "Online"
+                    uptime: 16393
+                offline:
+                  summary: Agent was found, but isn't currently connected.
+                  value:
+                    ready: false
+                    message: "Agent is offline, agent was last seen 12 days ago"
+                    uptime: 0
+        '404':
+          description: The api got your request, but was unable to locate the provided agentId.
+          content:
+            json/application:
+              schema:
+                $ref: '#/components/schemas/Info'
+              example:
+                ready: false
+                message: "The provided Agent does not exist"
+                uptime: 0
+      tags:
+        - Client
+  /agents/{agentId}/files/{fileId}:
+    get:
+      summary: Collect information (metadata) about a file.
+      description: Contact an Agent connected to the server to collect metadata about a file. Etag valid is provided in a header for versioning.
+      parameters:
+        - in: path
+          name: agentId
+          schema:
+            type: string
+          required: true
+          description: Unique public id of the Agent to find
+        - in: path
+          name: fileId
+          schema:
+            type: string
+          required: true
+          description: The id of the file to download from the agent.
+      responses:
+        '200':
+          description: File is available, and request for metadat was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Metadata'
+          headers:
+            ETAG-VERSION:
+              schema:
+                type: string
+                description: A value representing the current hash on the provided file
+                example: 16BB922E478E59A
+        '404':
+          description: File is not available, or the agent is no longer connected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                name: Not Found
+                status: 404
+                path: GET /agents/adf31d/files/123dji/
+                error:
+                  location: "path.agentId"
+                  message: "This agent is not currently connected to the api, or does not exist!"
+      tags:
+        - Client
+  /agents/{agentId}/files/{fileId}/download:
+    get:
+      summary: Attempt to download a file from an agent.
+      parameters:
+        - in: path
+          name: agentId
+          schema:
+            type: string
+          required: true
+          description: Unique public id of the Agent to find
+        - in: path
+          name: fileId
+          schema:
+            type: string
+          required: true
+          description: The id of the file to download from the agent.
+      responses:
+        '200':
+          description: File is available, download beginning. Some possible content types are shown below, but more may be possible. This should not be handled on the clientside, the user should be shown a download dialog.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: The provided fileId or agentId does not exist. Please see the error message for more information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                name: Not Found
+                status: 404
+                path: GET /agents/adf31d/files/123dji/download
+                error:
+                  location: path.agentId
+                  message: This agent is not currently connected to the api, or does not exist!
+      tags:
+        - Client
+  /upload/{uploadId}:
+    post:
+      summary: Upload data to a waiting user.
+      description: This endpoint is dynmanically generated by the api, Agents will be asked to upload data to this endpoint when a user requests their file for download.
+      parameters:
+        - in: path
+          name: uploadId
+          schema:
+            type: string
+          required: true
+          description: The id assigned by the api for the file to be uploaded to.
+      responses:
+        '204':
+          description: Upload was completed succesfully!
+        '400':
+          description: Upload failed, but it can be tried again. Please try uploading again to the provided url in the `UPLOAD_RETRY` header.
+          headers:
+            UPLOAD_RETRY:
+              schema:
+                type: string
+                example: https://RipTide.com/api/v1/upload/12lkjd1209w
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                name: Bad Request
+                status: 400
+                path: POST /upload/12lkjd9n2
+                error:
+                  location: path.uploadId
+                  message: That uploadId does not eixst or is no longer valid!
+        '404':
+          description: This endpoint no longer exists, or never did exist. This can happen if the Agent took too long to begin uploading the file. The Agent should not try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                name: Not Found
+                status: 404
+                path: POST /upload/12lkjd9n2
+                error:
+                  location: path.uploadId
+                  message: That uploadId does not eixst or is no longer valid!
+      tags:
+        - Agent
+
