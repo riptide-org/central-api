@@ -42,13 +42,13 @@ macro_rules! load_env {
 pub struct Config {
     server_ip: String,
     server_port: u16,
-  
+
     database_host: String,
     database_port: u16,
     database_name: String,
     database_user: String,
     database_pass: String,
-  
+
     browser_base_url: String,
     request_timeout_threshold: usize,
 }
@@ -56,7 +56,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Config {
         Config {
-            server_ip: String::from("127.0.0.1"), 
+            server_ip: String::from("127.0.0.1"),
             server_port: 3030,
 
             database_host: String::from("127.0.0.1"),
