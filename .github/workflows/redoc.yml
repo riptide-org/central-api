@@ -1,0 +1,34 @@
+name: OAS Docs
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '*.oas.yml'
+
+jobs:
+    release:
+        name: GitHub Pages
+        runs-on: ubuntu-latest
+
+        steps:
+          - name: Checkout Repository
+            uses: actions/checkout@v1
+
+          - name: Bundle Api using redoc-cli
+            uses: seeebiii/redoc-cli-github-action@v10
+            with:
+              args: 'bundle openapi.oas.yml'
+          
+          - name: Copy Files
+            run: | 
+              mkdir ./docs/
+              mv ./redoc-static.html ./docs/index.html
+
+          - name: Deploy
+            uses: peaceiris/actions-gh-pages@v3
+            with:
+              github_token: ${{ secrets.GITHUB_TOKEN }}
+              publish_branch: gh-pages
+              publish_dir: ./docs/
+              destination_dir: ./
