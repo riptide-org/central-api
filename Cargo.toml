@@ -1,23 +1,16 @@
 [package]
-name = "central-api"
+name = "actix-learning"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ws-com-framework= { git="https://github.com/file-share-platform/ws-com-framework", default-features = false, features = ["server", "wrapper-warp"], rev="3a9c2fa" }
-tokio = { version = "1", default-features = false, features = ["sync", "macros"] }
-warp = { version = "0.3", features = ["tls"] }
-futures="0.3.16"
-tokio-stream="0.1.7"
-bytes="1"
-mobc="0.7.3"
-mobc-postgres = { version = "*", features = ["with-chrono-0_4"] }
-chrono = { version = "0.4" }
+actix = "0.13.0"
+actix-web = "4"
+actix-web-actors = "4"
+tokio = { version = "1", features = ["full"] }
+log = "0.4.14"
+futures = "0.3.21"
+async-stream = "0.3.2"
 
-bincode = "1.2.1"
-
-#Cryptographic Crates
-rand = { version = "0.8.4", default-features = false, features = ["std_rng"] }
-sha2 = { version = "0.9.8" }
+diesel = { version = "1.4.8", features = ["r2d2", "sqlite"] }

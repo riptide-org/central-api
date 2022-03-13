@@ -1,206 +1,170 @@
-//! This is the central always-on api for file-share. It is designed to take requests from clients
-//! and the front end api, returning useful information to users.
-//! It is currently in a functional prototype stage of development, a lot of work is needed to
-//! finalize the api functionality.
+use std::{time::Duration, collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}}};
+use actix::{Actor, AsyncContext, StreamHandler};
+use actix_web::{HttpServer, App, web::{self, Bytes}, HttpRequest, HttpResponse, get, post, error::PayloadError};
+use actix_web_actors::ws;
+use diesel::{r2d2::{ConnectionManager, self}, SqliteConnection};
+use futures::StreamExt;
+use log::{trace, warn, info, error};
+use tokio::sync::{mpsc, RwLock};
 
-mod common;
-mod db;
-mod error;
-mod handler;
-mod structs;
+type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
 
-use std::collections::HashMap;
-use std::convert::Infallible;
-use std::env;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, RwLock};
-use warp::{path, Filter};
-use ws_com_framework::Message;
-
-/// All currently connected server agents. Each server agent has a unique id, so there is no chance of collisions.
-type ServerAgents = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>>;
-
-/// Requests from clients which are waiting for a response. The response can come from either an http request,
-/// or from a websocket.
-type PendingStreams =
-    Arc<RwLock<HashMap<String, oneshot::Sender<Result<Box<dyn warp::Reply>, warp::http::Error>>>>>;
-
-macro_rules! load_env {
-    ( $x:expr ) => {
-        match env::var($x) {
-            Ok(f) => match f.parse() {
-                Ok(g) => g,
-                Err(_) => panic!("Enviroment variable `{}` not found!", $x),
-            },
-            Err(_) => panic!("Enviroment variable `{}` not found!", $x),
-        }
-    };
+struct State {
+    servers: RwLock<HashMap<String, mpsc::Sender<WsAction>>>,
+    requests: RwLock<
+                HashMap<
+                    String,
+                    mpsc::Sender<Result<Bytes, PayloadError>>
+                    >
+                >,
+    counter: AtomicUsize,
+    base_url: String,
 }
 
-#[derive(Clone)]
-pub struct Config {
-    server_ip: String,
-    server_port: u16,
-
-    database_host: String,
-    database_port: u16,
-    database_name: String,
-    database_user: String,
-    database_pass: String,
-
-    browser_base_url: String,
-    request_timeout_threshold: usize,
+struct WsHandler {
+    rcv: mpsc::Receiver<WsAction>,
 }
 
-impl Default for Config {
-    fn default() -> Config {
-        Config {
-            server_ip: String::from("127.0.0.1"),
-            server_port: 3030,
+impl Actor for WsHandler {
+    type Context = ws::WebsocketContext<Self>;
 
-            database_host: String::from("127.0.0.1"),
-            database_port: 7877,
-            database_name: String::from("postgres"),
-            database_user: String::from("postgres"),
-            database_pass: String::from(""),
-
-            browser_base_url: String::from("http://localhost:3030"),
-            request_timeout_threshold: 5000,
-        }
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.listen_for_response(ctx);
     }
 }
 
-impl Config {
-    pub fn from_env() -> Config {
-        Config {
-            server_ip: load_env!("HOST"),
-            server_port: load_env!("PORT"),
-
-            database_host: load_env!("DB_HOST"),
-            database_port: load_env!("DB_PORT"),
-            database_name: load_env!("DB_NAME"),
-            database_user: load_env!("DB_USER"),
-            database_pass: load_env!("DB_PASS"),
-
-            browser_base_url: load_env!("BROWSER_BASE_URL"),
-            request_timeout_threshold: load_env!("REQUEST_TIMEOUT_THRESHOLD"),
-        }
-    }
-}
-
-fn with_db(
-    db_pool: db::DBPool,
-) -> impl Filter<Extract = (db::DBPool,), Error = Infallible> + Clone {
-    warp::any().map(move || db_pool.clone())
-}
-
-fn with_config(cfg: Config) -> impl Filter<Extract = (Config,), Error = Infallible> + Clone {
-    warp::any().map(move || cfg.clone())
-}
-
-#[tokio::main]
-async fn main() {
-    let cfg = match cfg!(debug_assertions) {
-        true => Config::default(),
-        false => Config::from_env(),
-    };
-
-    let db_pool = db::create_pool(&cfg).expect("failed to create db pool");
-    db::init_db(&db_pool).await.expect("failed to initalize db");
-
-    let agents = ServerAgents::default();
-    let streams = PendingStreams::default();
-
-    let agents = warp::any().map(move || agents.clone());
-    let streams = warp::any().map(move || streams.clone());
-
-    // Get metadata for a file. Will return an error in the event that file does not exist,
-    // or if the request timed out.
-    let meta = warp::get()
-        .and(path::param::<String>())
-        .and(path("file"))
-        .and(path::param::<String>())
-        .and(path::end())
-        .and(agents.clone())
-        .and(streams.clone())
-        .and(with_config(cfg.clone()))
-        .and_then(handler::get_meta);
-
-    //Register a new server agent, get an id to connect across the websocket connection.
-    let ws_register = warp::post()
-        .and(path("ws-register"))
-        .and(path::end())
-        .and(with_db(db_pool.clone()))
-        .and_then(handler::register_websocket);
-
-    //Handles incoming websocket connections.
-    let ws = path("ws")
-        .and(path::param::<String>())
-        .and(path::end())
-        .and(warp::ws())
-        .and(with_db(db_pool))
-        .and(agents.clone())
-        .and(streams.clone())
-        .map(|id: String, ws: warp::ws::Ws, db, a, b| {
-            //TODO validate the id here, rather than in the handler itself
-            ws.on_upgrade(move |s| handler::websocket(s, id, db, a, b))
+//XXX use something like a protobuf to handle sending the data over websockets, this way we get better data compression
+impl WsHandler {
+    fn listen_for_response(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
+        ctx.run_interval(Duration::from_millis(50), |act, c| {
+            match act.rcv.try_recv() {
+                Ok(WsAction::UploadTo(msg, id)) => c.write_raw(ws::Message::Text(format!("url {msg}\nfile {id}").into())),
+                Ok(WsAction::ServerId(id)) => c.write_raw(ws::Message::Text(format!("your server id is {id}").into())),
+                Err(mpsc::error::TryRecvError::Empty) => (),
+                Err(mpsc::error::TryRecvError::Disconnected) => act.finished(c),
+            }
         });
+    }
+}
 
-    //Takes an upload stream from a server agent, and tries to pair it with a download stream from a client.
-    let upload = warp::post()
-        .and(path("upload"))
-        .and(path::param())
-        .and(path::end())
-        .and(warp::filters::body::stream())
-        .and(streams.clone())
-        .and_then(handler::upload);
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsHandler {
+    fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        match item {
+            Ok(msg) => {
+                info!(
+                    "received request from user and forward {:?}", msg
+                );
+            },
+            Err(e) => {
+                warn!(
+                    "received an error from client {:?}\ngoing to stop connection",
+                    e
+                );
+                self.finished(ctx);
+            }
+        }
+    }
+}
 
-    //This is the endpoint a client should hit when they want to download a file
-    //Has potential to timeout or fail if a server agent is not online, does not exist
-    //or does not send a valid data stream.
-    let download = warp::get()
-        .and(path::param::<String>())
-        .and(path::param::<String>())
-        .and(path("download"))
-        .and(path::end())
-        .and(agents)
-        .and(streams.clone())
-        .and(with_config(cfg.clone()))
-        .and_then(handler::download);
+#[derive(Debug)]
+enum WsAction {
+    UploadTo(String, String), //url - file_id
+    ServerId(usize),
+}
 
-    //Check if the server is up, and any relevant data about it
-    //Will allow checks on specific server agents, and checks on the database health
-    let heartbeat = warp::any()
-        .and(path("heartbeat"))
-        .and(
-            warp::path::param::<usize>()
-                .map(Some)
-                .or_else(|_| async { Ok::<(Option<usize>,), std::convert::Infallible>((None,)) }),
-        )
-        .and(path::end())
-        .and_then(handler::heartbeat);
+#[get("/websocket")]
+async fn websocket(req: HttpRequest, stream: web::Payload, state: web::Data<State>) -> Result<HttpResponse, actix_web::Error> {
+    let (tx, rx) = mpsc::channel(10);
+    let server_id = state.counter.fetch_add(1, Ordering::Relaxed);
+    tx.send(WsAction::ServerId(server_id)).await.unwrap();
 
-    //404 handler
-    let catcher = warp::any().map(|| {
-        warp::reply::with_status("Not Found", warp::hyper::StatusCode::from_u16(404).unwrap())
+    let mut servers = state.servers.write().await;
+    servers.insert(format!("{}", server_id), tx);
+
+    ws::start(WsHandler {
+        rcv: rx,
+    }, &req, stream)
+}
+
+#[get("/download/{server_id}/{file_id}")]
+async fn download(req: HttpRequest, state: web::Data<State>) -> HttpResponse {
+    let server_id: &str = req.match_info().get("server_id").unwrap();
+    let file_id: &str = req.match_info().get("file_id").unwrap();
+
+    //Check server is online
+    let reader = state.servers.read().await;
+    let server_online = reader.contains_key(server_id); //Duplicate req #cd
+    if server_online {
+        //Create
+        let download_id = state.counter.fetch_add(1, Ordering::Relaxed);
+        let (tx, mut rx) = mpsc::channel(100);
+
+        //Create a valid upload job
+        state.requests.write().await.insert(format!("{}", download_id), tx);
+
+        //Acquire channel to WS, and send upload req. to server
+        let msg = format!("{}/upload/{}", state.base_url, download_id);
+        let connected_servers = state.servers.read().await;
+        let uploader_ws = connected_servers.get(server_id).unwrap(); //Duplicate req #cd
+        uploader_ws.send(WsAction::UploadTo(msg, file_id.to_string())).await.unwrap();
+
+        let payload = async_stream::stream! {
+            while let Some(v) = rx.recv().await {
+                yield v;
+            }
+        };
+
+        //create a streaming response
+        HttpResponse::Ok()
+            .content_type("text/html")
+            .streaming(payload)
+    } else {
+        trace!("client attempted to request file {} from {}, but that server isn't connected", file_id, server_id);
+        HttpResponse::NotFound()
+            .content_type("text/html")
+            .body("requested resource not found, the server may not be connected")
+    }
+}
+
+#[post("/upload/{upload_id}")]
+async fn upload(req: HttpRequest, mut payload: web::Payload, state: web::Data<State>) -> HttpResponse {
+    let upload_id: &str = req.match_info().get("upload_id").unwrap();
+
+    //Get uploadee channel
+    let mut sender_store = state.requests.write().await;
+    println!("the upload id is: {upload_id}");
+    println!("available keys are: {:?}", sender_store.keys());
+    let sender = sender_store.remove(upload_id).unwrap();
+
+    //XXX timeout?
+    while let Some(chk) = payload.next().await {
+        if let Err(e) = sender.send(chk).await {
+            error!("problem sending payload {:?}", e);
+            return HttpResponse::InternalServerError()
+                .body("upload failed");
+        };
+    };
+
+    HttpResponse::Ok()
+        .body("succesfully uploaded")
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let state = web::Data::new(State {
+        servers: Default::default(),
+        requests: RwLock::new(HashMap::new()),
+        counter: AtomicUsize::new(0),
+        base_url: "http://127.0.0.1:8080".into(),
     });
-
-    let server = warp::path("server").and(download.or(meta).or(heartbeat));
-
-    let client = warp::path("client").and(upload.or(ws).or(ws_register));
-
-    let routes = warp::path("api")
-        .and(warp::path("v1"))
-        .and(server.or(client).or(catcher))
-        .with(warp::cors())
-        .recover(error::handle_rejection);
-
-    warp::serve(routes)
-        .run(
-            format!("{}:{}", cfg.server_ip, cfg.server_port)
-                .parse::<SocketAddr>()
-                .expect("Failed to parse address"),
-        )
-        .await;
+    HttpServer::new(move ||
+        App::new()
+            .app_data(state.clone())
+            .service(websocket)
+            .service(download)
+            .service(upload)
+    )
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
 }
