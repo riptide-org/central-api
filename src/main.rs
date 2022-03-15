@@ -1,112 +1,57 @@
-use std::{time::Duration, collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}}};
+use std::{time::Duration, collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}}, fs::File};
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{HttpServer, App, web::{self, Bytes}, HttpRequest, HttpResponse, get, post, error::PayloadError};
 use actix_web_actors::ws;
+use db::MockDB;
 use diesel::{r2d2::{ConnectionManager, self}, SqliteConnection};
 use futures::StreamExt;
 use log::{trace, warn, info, error};
 use tokio::sync::{mpsc, RwLock};
+use websockets::{WsAction, websocket};
+
+mod util;
+mod db;
+mod websockets;
 
 type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
+type FileId = u32;
+type ServerId = [u8; 6];
+type RequestId = [u8; 6];
+type Passcode = [u8; 32];
 
-struct State {
-    servers: RwLock<HashMap<String, mpsc::Sender<WsAction>>>,
+pub struct State {
+    unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<WsAction>>>,
+    servers: RwLock<HashMap<ServerId, mpsc::Sender<WsAction>>>,
     requests: RwLock<
                 HashMap<
-                    String,
+                    RequestId,
                     mpsc::Sender<Result<Bytes, PayloadError>>
                     >
                 >,
-    counter: AtomicUsize,
     base_url: String,
 }
 
-struct WsHandler {
-    rcv: mpsc::Receiver<WsAction>,
-}
-
-impl Actor for WsHandler {
-    type Context = ws::WebsocketContext<Self>;
-
-    fn started(&mut self, ctx: &mut Self::Context) {
-        self.listen_for_response(ctx);
-    }
-}
-
-//XXX use something like a protobuf to handle sending the data over websockets, this way we get better data compression
-impl WsHandler {
-    fn listen_for_response(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
-        ctx.run_interval(Duration::from_millis(50), |act, c| {
-            match act.rcv.try_recv() {
-                Ok(WsAction::UploadTo(msg, id)) => c.write_raw(ws::Message::Text(format!("url {msg}\nfile {id}").into())),
-                Ok(WsAction::ServerId(id)) => c.write_raw(ws::Message::Text(format!("your server id is {id}").into())),
-                Err(mpsc::error::TryRecvError::Empty) => (),
-                Err(mpsc::error::TryRecvError::Disconnected) => act.finished(c),
-            }
-        });
-    }
-}
-
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsHandler {
-    fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        match item {
-            Ok(msg) => {
-                info!(
-                    "received request from user and forward {:?}", msg
-                );
-            },
-            Err(e) => {
-                warn!(
-                    "received an error from client {:?}\ngoing to stop connection",
-                    e
-                );
-                self.finished(ctx);
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-enum WsAction {
-    UploadTo(String, String), //url - file_id
-    ServerId(usize),
-}
-
-#[get("/websocket")]
-async fn websocket(req: HttpRequest, stream: web::Payload, state: web::Data<State>) -> Result<HttpResponse, actix_web::Error> {
-    let (tx, rx) = mpsc::channel(10);
-    let server_id = state.counter.fetch_add(1, Ordering::Relaxed);
-    tx.send(WsAction::ServerId(server_id)).await.unwrap();
-
-    let mut servers = state.servers.write().await;
-    servers.insert(format!("{}", server_id), tx);
-
-    ws::start(WsHandler {
-        rcv: rx,
-    }, &req, stream)
-}
-
+/// Download a file from a client
 #[get("/download/{server_id}/{file_id}")]
-async fn download(req: HttpRequest, state: web::Data<State>) -> HttpResponse {
-    let server_id: &str = req.match_info().get("server_id").unwrap();
-    let file_id: &str = req.match_info().get("file_id").unwrap();
+async fn download(req: HttpRequest, state: web::Data<State>, path: web::Path<(ServerId, FileId)>) -> HttpResponse {
+    let (server_id, file_id) = path.into_inner();
 
     //Check server is online
     let reader = state.servers.read().await;
-    let server_online = reader.contains_key(server_id); //Duplicate req #cd
+    let server_online = reader.contains_key(&server_id); //Duplicate req #cd
     if server_online {
-        //Create
-        let download_id = state.counter.fetch_add(1, Ordering::Relaxed);
         let (tx, mut rx) = mpsc::channel(100);
 
+        let download_id = util::generate_random(&util::URL_SAFE_ALPHABET, 6).try_into().unwrap();
+
         //Create a valid upload job
-        state.requests.write().await.insert(format!("{}", download_id), tx);
+        state.requests.write().await.insert(download_id, tx);
 
         //Acquire channel to WS, and send upload req. to server
-        let msg = format!("{}/upload/{}", state.base_url, download_id);
+        let msg = format!("{}/upload/{}", state.base_url, unsafe { String::from_utf8_unchecked(download_id.to_vec()) });
         let connected_servers = state.servers.read().await;
-        let uploader_ws = connected_servers.get(server_id).unwrap(); //Duplicate req #cd
-        uploader_ws.send(WsAction::UploadTo(msg, file_id.to_string())).await.unwrap();
+        let uploader_ws = connected_servers.get(&server_id).unwrap(); //Duplicate req #cd
+        uploader_ws.send(WsAction::UploadTo(msg, file_id)).await.unwrap();
 
         let payload = async_stream::stream! {
             while let Some(v) = rx.recv().await {
@@ -119,22 +64,23 @@ async fn download(req: HttpRequest, state: web::Data<State>) -> HttpResponse {
             .content_type("text/html")
             .streaming(payload)
     } else {
-        trace!("client attempted to request file {} from {}, but that server isn't connected", file_id, server_id);
+        trace!("client attempted to request file {} from {:?}, but that server isn't connected", file_id, server_id);
         HttpResponse::NotFound()
             .content_type("text/html")
             .body("requested resource not found, the server may not be connected")
     }
 }
 
+/// Upload a file or metadata to a waiting client
 #[post("/upload/{upload_id}")]
-async fn upload(req: HttpRequest, mut payload: web::Payload, state: web::Data<State>) -> HttpResponse {
-    let upload_id: &str = req.match_info().get("upload_id").unwrap();
+async fn upload(req: HttpRequest, mut payload: web::Payload, state: web::Data<State>, path: web::Path<ServerId>) -> HttpResponse {
+    let upload_id = path.into_inner();
 
     //Get uploadee channel
     let mut sender_store = state.requests.write().await;
-    println!("the upload id is: {upload_id}");
+    println!("the upload id is: {upload_id:?}");
     println!("available keys are: {:?}", sender_store.keys());
-    let sender = sender_store.remove(upload_id).unwrap();
+    let sender = sender_store.remove(&upload_id).unwrap();
 
     //XXX timeout?
     while let Some(chk) = payload.next().await {
@@ -149,17 +95,26 @@ async fn upload(req: HttpRequest, mut payload: web::Payload, state: web::Data<St
         .body("succesfully uploaded")
 }
 
+/// Attempt to register a new webserver with the api
+#[post("/register")]
+pub async fn register() -> HttpResponse {
+    todo!()
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    pretty_env_logger::init();
     let state = web::Data::new(State {
+        unauthenticated_servers: Default::default(),
         servers: Default::default(),
         requests: RwLock::new(HashMap::new()),
-        counter: AtomicUsize::new(0),
         base_url: "http://127.0.0.1:8080".into(),
     });
+    let database = MockDB {};
     HttpServer::new(move ||
         App::new()
             .app_data(state.clone())
+            .app_data(database.clone())
             .service(websocket)
             .service(download)
             .service(upload)
