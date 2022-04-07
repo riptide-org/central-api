@@ -1,27 +1,24 @@
-use std::{time::Duration, collections::HashMap, sync::{atomic::{AtomicUsize, Ordering}}, fs::File};
-use actix::{Actor, AsyncContext, StreamHandler};
+use std::collections::HashMap;
 use actix_web::{HttpServer, App, web::{self, Bytes}, HttpRequest, HttpResponse, get, post, error::PayloadError};
-use actix_web_actors::ws;
 use db::MockDB;
 use diesel::{r2d2::{ConnectionManager, self}, SqliteConnection};
 use futures::StreamExt;
 use log::{trace, warn, info, error};
+use rand::Rng;
 use tokio::sync::{mpsc, RwLock};
-use websockets::{WsAction, websocket};
+use websockets::websocket;
+use ws_com_framework::{FileId, PublicId as ServerId, Passcode, Message};
 
-mod util;
 mod db;
 mod websockets;
 
 type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
-type FileId = u32;
-type ServerId = [u8; 6];
-type RequestId = [u8; 6];
-type Passcode = [u8; 32];
+
+type RequestId = u64;
 
 pub struct State {
-    unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<WsAction>>>,
-    servers: RwLock<HashMap<ServerId, mpsc::Sender<WsAction>>>,
+    unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<Message>>>,
+    servers: RwLock<HashMap<ServerId, mpsc::Sender<Message>>>,
     requests: RwLock<
                 HashMap<
                     RequestId,
@@ -42,16 +39,16 @@ async fn download(req: HttpRequest, state: web::Data<State>, path: web::Path<(Se
     if server_online {
         let (tx, mut rx) = mpsc::channel(100);
 
-        let download_id = util::generate_random(&util::URL_SAFE_ALPHABET, 6).try_into().unwrap();
+        let download_id = rand::thread_rng().gen();
 
         //Create a valid upload job
         state.requests.write().await.insert(download_id, tx);
 
         //Acquire channel to WS, and send upload req. to server
-        let msg = format!("{}/upload/{}", state.base_url, unsafe { String::from_utf8_unchecked(download_id.to_vec()) });
+        let msg = format!("{}/upload/{}", state.base_url, download_id);
         let connected_servers = state.servers.read().await;
         let uploader_ws = connected_servers.get(&server_id).unwrap(); //Duplicate req #cd
-        uploader_ws.send(WsAction::UploadTo(msg, file_id)).await.unwrap();
+        uploader_ws.send(Message::UploadTo(file_id, msg)).await.unwrap();
 
         let payload = async_stream::stream! {
             while let Some(v) = rx.recv().await {

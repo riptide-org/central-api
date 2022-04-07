@@ -3,29 +3,15 @@ use std::time::Duration;
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{get, web, HttpRequest, HttpResponse};
 use actix_web_actors::ws::{self, CloseReason};
-use log::{info, warn};
+use log::{info, warn, error};
 use tokio::sync::mpsc;
+use ws_com_framework::Message;
 
 use crate::{FileId, ServerId, State, db::{self, DbBackend}};
 
 #[derive(Debug)]
-pub enum WsAction {
-    /// Upload the file contents to the provided url
-    UploadTo(String, FileId),
-    /// Request a metadata file upload to the provided url
-    UploadMetadata(String, FileId),
-    /// Flush and close the connection to the websocket,
-    CloseConnection(Option<CloseReason>),
-    /// Request authentication for the provided ServerId, the client should
-    /// respond quickly or it wil be disconnected.
-    RequestAuthentication(ServerId),
-    /// The server should respond with it's current readiness
-    RequestStatus,
-}
-
-#[derive(Debug)]
 pub struct WsHandler {
-    rcv: mpsc::Receiver<WsAction>,
+    rcv: mpsc::Receiver<Message>,
 }
 
 impl Actor for WsHandler {
@@ -40,17 +26,36 @@ impl Actor for WsHandler {
 impl WsHandler {
     fn listen_for_response(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
         ctx.run_interval(Duration::from_millis(50), |act, c| {
+            macro_rules! close_connection {
+                () => {
+                    {
+                        c.close(None);
+                        act.finished(c);
+                    }
+                };
+            }
+
+            macro_rules! send_msg {
+                ($msg:expr) => {
+                    {
+                        if let Ok(data) = TryInto::<Vec<u8>>::try_into($msg) {
+                            c.write_raw(ws::Message::Binary(actix_web::web::Bytes::from(data)));
+                        } else {
+                            error!("failed to send message down websocket");
+                        }
+                    }
+                }
+            }
+
             match act.rcv.try_recv() {
-                Ok(WsAction::UploadTo(msg, id)) => {
-                    c.write_raw(ws::Message::Text(format!("url {msg}\nfile {id}").into()))
-                }
-                Ok(WsAction::UploadMetadata(msg, id)) => {} //TODO
-                Ok(WsAction::RequestStatus) => {}           //TODO
-                Ok(WsAction::RequestAuthentication(server_id)) => {} //TODO
-                Ok(WsAction::CloseConnection(rsn)) => {
-                    c.close(rsn);
-                    act.finished(c);
-                }
+                Ok(Message::Close) => close_connection!(),
+                Ok(Message::Error(reason, end_connection, kind)) => {
+                    send_msg!(Message::Error(reason, end_connection, kind));
+                    if Into::<bool>::into(end_connection) {
+                        close_connection!()
+                    }
+                },
+                Ok(msg) => send_msg!(msg),
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => act.finished(c),
             }
@@ -62,7 +67,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsHandler {
     fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match item {
             Ok(msg) => {
-                info!("received request from user and forward {:?}", msg);
+                info!("received request from user {:?}", msg);
             }
             Err(e) => {
                 warn!(
@@ -84,9 +89,8 @@ pub async fn websocket(
 ) -> Result<HttpResponse, actix_web::Error> {
     let server_id = path.into_inner();
 
-
     let (tx, rx) = mpsc::channel(10);
-    tx.send(WsAction::RequestAuthentication(server_id)).await.unwrap();
+    tx.send(Message::AuthReq(server_id)).await.unwrap();
 
     if state.servers.read().await.contains_key(&server_id) {
         return Ok(HttpResponse::Forbidden().body("another server is already authenticated with this id"))

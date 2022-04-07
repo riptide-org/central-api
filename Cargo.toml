@@ -3,8 +3,9 @@ name = "actix-learning"
 version = "0.1.0"
 edition = "2021"
 
-
 [dependencies]
+ws-com-framework = { path="../ws-com-framework" }
+
 actix = "0.13.0"
 actix-web = "4"
 actix-web-actors = "4"
