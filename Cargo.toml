@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 ws-com-framework = { path="../ws-com-framework" }
 
+async-trait = "0.1.53"
+
 actix = "0.13.0"
 actix-web = "4"
 actix-web-actors = "4"

@@ -2,12 +2,12 @@ use std::time::Duration;
 
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{get, web, HttpRequest, HttpResponse};
-use actix_web_actors::ws::{self, CloseReason};
+use actix_web_actors::ws;
 use log::{info, warn, error};
 use tokio::sync::mpsc;
 use ws_com_framework::Message;
 
-use crate::{FileId, ServerId, State, db::{self, DbBackend}};
+use crate::{ServerId, State};
 
 #[derive(Debug)]
 pub struct WsHandler {
