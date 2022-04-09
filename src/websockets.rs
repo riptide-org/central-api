@@ -3,7 +3,7 @@ use std::time::Duration;
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{get, web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
-use log::{info, warn, error};
+use log::{info, warn, error, trace};
 use tokio::sync::mpsc;
 use ws_com_framework::Message;
 
@@ -66,8 +66,20 @@ impl WsHandler {
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsHandler {
     fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match item {
+            Ok(ws::Message::Binary(msg)) => {
+                match Message::try_from(&msg[..]) {
+                    Ok(m) => info!("Got binary message from peer: {m:?}"),
+                    Err(e) => error!("failed to decode binary message from peer {e:?}"),
+                }
+            },
+            Ok(ws::Message::Ping(msg)) => {
+                ctx.write_raw(ws::Message::Pong(msg)); //XXX this may be blocking
+            }
+            Ok(ws::Message::Pong(_)) => {
+                trace!("recived pong message from peer"); //XXX find a way to send ping message reguararly
+            },
             Ok(msg) => {
-                info!("received request from user {:?}", msg);
+                info!("recieved message from peer {msg:?}");
             }
             Err(e) => {
                 warn!(

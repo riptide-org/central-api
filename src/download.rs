@@ -6,8 +6,6 @@ use ws_com_framework::{FileId, Message};
 
 use crate::{State, ServerId, db::{DbBackend, Database}};
 
-
-
 /// Download a file from a client
 // Dev note: This code is split off in a seperate handler function to allow testing
 // via implementations/mocking.

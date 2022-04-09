@@ -1,4 +1,4 @@
-use std::{ops::Deref, collections::HashMap};
+use std::{ops::Deref, collections::HashMap, rc::Rc, sync::Arc};
 
 use actix_web::web::Data;
 use async_trait::async_trait;
@@ -22,7 +22,7 @@ pub struct MockDb {
 }
 
 #[async_trait]
-pub trait DbBackend: Send + Sync + 'static {
+pub trait DbBackend {
     /// `new` will attempt
     async fn new() -> Result<Self, DbBackendError> where Self: Sized;
 
@@ -96,7 +96,7 @@ impl DbBackend for MockDb {
 }
 
 #[async_trait]
-impl<T: DbBackend> DbBackend for Data<T> {
+impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
     async fn new() -> Result<Data<T>, DbBackendError> {
         Ok(Data::new(T::new().await?))
     }
@@ -124,7 +124,46 @@ impl<T: DbBackend> DbBackend for Data<T> {
     }
 }
 
+#[async_trait]
+impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
+    async fn new() -> Result<Arc<T>, DbBackendError> {
+        Ok(Arc::new(T::new().await?))
+    }
+
+    async fn save_entry(&self, server_id: ServerId, passcode: Passcode) -> Result<Option<Passcode>, DbBackendError> {
+        self.deref().save_entry(server_id, passcode).await
+    }
+
+    async fn validate_server(&self, server_id: &ServerId, passcode: &Passcode) -> Result<bool, DbBackendError> {
+        self.deref().validate_server(server_id, passcode).await
+    }
+
+    async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
+        self.deref().contains_entry(server_id).await
+    }
+
+    async fn close(self) -> Result<(), DbBackendError> {
+        match std::sync::Arc:: <T> ::try_unwrap(self) {
+            Ok(r) => r.close().await,
+            Err(_) => {
+                trace!("attempted closure with more than 1 strong reference");
+                Ok(())
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum DbBackendError {
+    AlreadyExist
+}
+
+impl std::fmt::Display for DbBackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+
+impl std::error::Error for DbBackendError {
 
 }

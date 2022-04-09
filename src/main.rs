@@ -1,5 +1,4 @@
-
-// #![deny(
+// #![warn(
 //     missing_docs,
 //     missing_debug_implementations,
 //     missing_copy_implementations,
@@ -13,6 +12,7 @@
 // )]
 
 mod db;
+mod error;
 mod auth;
 mod websockets;
 mod upload;
