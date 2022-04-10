@@ -6,7 +6,9 @@ use ws_com_framework::{PublicId, Passcode};
 use crate::{db::{Database, DbBackend, DbBackendError}, error::HttpError};
 
 pub async fn validate_login(server_id: PublicId, passcode: Passcode, state: impl DbBackend) -> Result<bool, HttpError> {
-    todo!()
+    state.validate_server(&server_id, &passcode)
+        .await
+        .map_err(|e| e.into())
 }
 
 /// Attempt to register a new webserver with the api

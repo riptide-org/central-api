@@ -6,6 +6,8 @@ use diesel::{SqliteConnection, r2d2::{ConnectionManager, self}};
 use log::trace;
 use tokio::sync::RwLock;
 use ws_com_framework::Passcode;
+use sha2::{Sha256, Digest};
+
 
 use crate::ServerId;
 
@@ -51,6 +53,8 @@ impl DbBackend for Database {
     }
 
     async fn validate_server(&self, server_id: &ServerId, passcode: &Passcode) -> Result<bool, DbBackendError> {
+        // let mut hasher = Sha256::new();
+        // hasher.update(passcode);
         todo!()
     }
 
