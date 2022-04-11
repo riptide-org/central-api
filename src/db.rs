@@ -1,22 +1,17 @@
-use std::{ops::Deref, collections::HashMap, rc::Rc, sync::Arc};
+use std::{ops::Deref, collections::HashMap, sync::Arc};
 
-use actix_web::web::Data;
+use actix_web::web::{Data, self};
 use async_trait::async_trait;
-use diesel::{SqliteConnection, r2d2::{ConnectionManager, self}};
+use diesel::{SqliteConnection, r2d2::{ConnectionManager, Pool}, RunQueryDsl, QueryDsl, ExpressionMethods};
 use log::trace;
 use tokio::sync::RwLock;
 use ws_com_framework::Passcode;
 use sha2::{Sha256, Digest};
+use crate::{ServerId, models::*};
 
+type DbPool = Pool<ConnectionManager<SqliteConnection>>;
 
-use crate::ServerId;
-
-type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
-
-#[derive(Clone)]
-pub struct Database {
-    pool: DbPool,
-}
+pub struct Database(DbPool);
 
 /// An entirely insecure mock implementation of a backend database for development and testing purposes
 pub struct MockDb {
@@ -45,25 +40,89 @@ pub trait DbBackend {
 #[async_trait]
 impl DbBackend for Database {
     async fn new() -> Result<Self, DbBackendError> {
-        todo!()
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        Ok(Self(
+            Pool::builder()
+                .build(ConnectionManager::<SqliteConnection>::new(&database_url))
+                .map_err(|e| DbBackendError::InitFailed(e.to_string()))?
+        ))
     }
 
     async fn save_entry(&self, server_id: ServerId, passcode: Passcode) -> Result<Option<Passcode>, DbBackendError> {
-        todo!()
+        use crate::schema::agents::dsl::*;
+
+        let mut hasher = Sha256::new();
+        hasher.update(passcode);
+
+        let new_agent: NewAgent = NewAgent {
+            public_id: server_id as i64,
+            secure_key: hasher.finalize().to_vec(), //hash passcode
+        };
+
+        let conn = self.0.get().map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+
+        //TODO: check if exists already and save that passcode to return as Some(Passcode) at end
+
+        //run in a blocking context
+        web::block(move || {
+            diesel::insert_into(agents)
+                .values(&new_agent)
+                .execute(&conn)
+        })
+            .await
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        Ok(None)
     }
 
     async fn validate_server(&self, server_id: &ServerId, passcode: &Passcode) -> Result<bool, DbBackendError> {
-        // let mut hasher = Sha256::new();
-        // hasher.update(passcode);
-        todo!()
+        use crate::schema::agents::dsl::*;
+
+        let conn = self.0.get().map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+        let server_id: i64 = *server_id as i64;
+        let users = web::block(move || {
+            agents
+                .filter(public_id.eq(server_id))
+                .load::<crate::models::Agent>(&conn)
+        })
+            .await
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        if users.len() > 1 {
+            // UNIQUE constraint means there will never be more than 1 result
+            let cmp = &users[0].secure_key;
+            let mut hasher = Sha256::new();
+            hasher.update(passcode);
+            Ok(hasher.finalize().to_vec() == *cmp)
+        } else {
+            Ok(false)
+        }
     }
 
     async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
-        todo!()
+        use crate::schema::agents::dsl::*;
+
+        let conn = self.0.get().map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+        let server_id: i64 =*server_id as i64;
+
+        let users: i64 = web::block(move || {
+            agents
+                .filter(public_id.eq(server_id))
+                .count()
+                .get_result(&conn)
+        })
+            .await
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        Ok(users != 0)
     }
 
     async fn close(self) -> Result<(), DbBackendError> {
-        todo!()
+        drop(self);
+        Ok(())
     }
 }
 
@@ -157,17 +216,24 @@ impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
     }
 }
 
-#[derive(Debug)]
+//XXX: this could be refactored to export internal types? Would be better for error handling
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DbBackendError {
-    AlreadyExist
+    AlreadyExist,
+    NoConnectionAvailable(String),
+    QueryFailed(String),
+    InitFailed(String),
 }
 
 impl std::fmt::Display for DbBackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        match self {
+            DbBackendError::AlreadyExist => write!(f, "entry already exists"),
+            DbBackendError::NoConnectionAvailable(e) => write!(f, "connection is unavailable due to error: {}", e),
+            DbBackendError::QueryFailed(e) => write!(f, "query failed due to error: {}", e),
+            DbBackendError::InitFailed(e) => write!(f, "initalise database failed due to error: {}", e),
+        }
     }
 }
 
-impl std::error::Error for DbBackendError {
-
-}
+impl std::error::Error for DbBackendError {}
