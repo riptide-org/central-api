@@ -1,13 +1,16 @@
-use std::{ops::Deref, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
-use actix_web::web::{Data, self};
+use crate::{models::*, ServerId};
+use actix_web::web::{self, Data};
 use async_trait::async_trait;
-use diesel::{SqliteConnection, r2d2::{ConnectionManager, Pool}, RunQueryDsl, QueryDsl, ExpressionMethods};
+use diesel::{
+    r2d2::{ConnectionManager, Pool},
+    ExpressionMethods, QueryDsl, RunQueryDsl, SqliteConnection,
+};
 use log::trace;
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use ws_com_framework::Passcode;
-use sha2::{Sha256, Digest};
-use crate::{ServerId, models::*};
 
 type DbPool = Pool<ConnectionManager<SqliteConnection>>;
 
@@ -21,14 +24,24 @@ pub struct MockDb {
 #[async_trait]
 pub trait DbBackend {
     /// `new` will attempt
-    async fn new() -> Result<Self, DbBackendError> where Self: Sized;
+    async fn new() -> Result<Self, DbBackendError>
+    where
+        Self: Sized;
 
     /// `save_entry` will take a passcode and `ServerId` and save it into the server.
-    async fn save_entry(&self, server_id: ServerId, passcode: Passcode) -> Result<Option<Passcode>, DbBackendError>;
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError>;
 
     /// `validate_server` will take a provided `ServerId` and return true if the provided passcode matches.
     /// It will return false if the provided passcode fails validation.
-    async fn validate_server(&self, server_id: &ServerId, passcode: &Passcode) -> Result<bool, DbBackendError>;
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError>;
 
     /// `contains_entry` will validate whether the provided `ServerId` exists in the database
     async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError>;
@@ -44,11 +57,15 @@ impl DbBackend for Database {
         Ok(Self(
             Pool::builder()
                 .build(ConnectionManager::<SqliteConnection>::new(&database_url))
-                .map_err(|e| DbBackendError::InitFailed(e.to_string()))?
+                .map_err(|e| DbBackendError::InitFailed(e.to_string()))?,
         ))
     }
 
-    async fn save_entry(&self, server_id: ServerId, passcode: Passcode) -> Result<Option<Passcode>, DbBackendError> {
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError> {
         use crate::schema::agents::dsl::*;
 
         let mut hasher = Sha256::new();
@@ -59,7 +76,10 @@ impl DbBackend for Database {
             secure_key: hasher.finalize().to_vec(), //hash passcode
         };
 
-        let conn = self.0.get().map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+        let conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
 
         //TODO: check if exists already and save that passcode to return as Some(Passcode) at end
 
@@ -69,26 +89,33 @@ impl DbBackend for Database {
                 .values(&new_agent)
                 .execute(&conn)
         })
-            .await
-            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
-            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+        .await
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
         Ok(None)
     }
 
-    async fn validate_server(&self, server_id: &ServerId, passcode: &Passcode) -> Result<bool, DbBackendError> {
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError> {
         use crate::schema::agents::dsl::*;
 
-        let conn = self.0.get().map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+        let conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
         let server_id: i64 = *server_id as i64;
         let users = web::block(move || {
             agents
                 .filter(public_id.eq(server_id))
                 .load::<crate::models::Agent>(&conn)
         })
-            .await
-            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
-            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+        .await
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
         if users.len() > 1 {
             // UNIQUE constraint means there will never be more than 1 result
@@ -104,8 +131,11 @@ impl DbBackend for Database {
     async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
         use crate::schema::agents::dsl::*;
 
-        let conn = self.0.get().map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
-        let server_id: i64 =*server_id as i64;
+        let conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+        let server_id: i64 = *server_id as i64;
 
         let users: i64 = web::block(move || {
             agents
@@ -113,9 +143,9 @@ impl DbBackend for Database {
                 .count()
                 .get_result(&conn)
         })
-            .await
-            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
-            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+        .await
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
         Ok(users != 0)
     }
@@ -130,15 +160,23 @@ impl DbBackend for Database {
 impl DbBackend for MockDb {
     async fn new() -> Result<Self, DbBackendError> {
         Ok(Self {
-            store: Default::default()
+            store: Default::default(),
         })
     }
 
-    async fn save_entry(&self, server_id: ServerId, passcode: Passcode) -> Result<Option<Passcode>, DbBackendError> {
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError> {
         Ok(self.store.write().await.insert(server_id, passcode))
     }
 
-    async fn validate_server(&self, server_id: &ServerId, passcode: &Passcode) -> Result<bool, DbBackendError> {
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError> {
         match self.store.read().await.get(server_id) {
             Some(s) if s == passcode => Ok(true),
             _ => Ok(false),
@@ -164,11 +202,19 @@ impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
         Ok(Data::new(T::new().await?))
     }
 
-    async fn save_entry(&self, server_id: ServerId, passcode: Passcode) -> Result<Option<Passcode>, DbBackendError> {
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError> {
         self.deref().save_entry(server_id, passcode).await
     }
 
-    async fn validate_server(&self, server_id: &ServerId, passcode: &Passcode) -> Result<bool, DbBackendError> {
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError> {
         self.deref().validate_server(server_id, passcode).await
     }
 
@@ -177,12 +223,12 @@ impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
     }
 
     async fn close(self) -> Result<(), DbBackendError> {
-        match std::sync::Arc:: <T> ::try_unwrap(self.into_inner()) {
+        match std::sync::Arc::<T>::try_unwrap(self.into_inner()) {
             Ok(r) => r.close().await,
             Err(_) => {
                 trace!("attempted closure with more than 1 strong reference");
                 Ok(())
-            },
+            }
         }
     }
 }
@@ -193,11 +239,19 @@ impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
         Ok(Arc::new(T::new().await?))
     }
 
-    async fn save_entry(&self, server_id: ServerId, passcode: Passcode) -> Result<Option<Passcode>, DbBackendError> {
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError> {
         self.deref().save_entry(server_id, passcode).await
     }
 
-    async fn validate_server(&self, server_id: &ServerId, passcode: &Passcode) -> Result<bool, DbBackendError> {
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError> {
         self.deref().validate_server(server_id, passcode).await
     }
 
@@ -206,12 +260,12 @@ impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
     }
 
     async fn close(self) -> Result<(), DbBackendError> {
-        match std::sync::Arc:: <T> ::try_unwrap(self) {
+        match std::sync::Arc::<T>::try_unwrap(self) {
             Ok(r) => r.close().await,
             Err(_) => {
                 trace!("attempted closure with more than 1 strong reference");
                 Ok(())
-            },
+            }
         }
     }
 }
@@ -229,9 +283,13 @@ impl std::fmt::Display for DbBackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DbBackendError::AlreadyExist => write!(f, "entry already exists"),
-            DbBackendError::NoConnectionAvailable(e) => write!(f, "connection is unavailable due to error: {}", e),
+            DbBackendError::NoConnectionAvailable(e) => {
+                write!(f, "connection is unavailable due to error: {}", e)
+            }
             DbBackendError::QueryFailed(e) => write!(f, "query failed due to error: {}", e),
-            DbBackendError::InitFailed(e) => write!(f, "initalise database failed due to error: {}", e),
+            DbBackendError::InitFailed(e) => {
+                write!(f, "initalise database failed due to error: {}", e)
+            }
         }
     }
 }

@@ -3,7 +3,7 @@ use std::time::Duration;
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{get, web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
-use log::{info, warn, error, trace};
+use log::{error, info, trace, warn};
 use tokio::sync::mpsc;
 use ws_com_framework::Message;
 
@@ -27,24 +27,20 @@ impl WsHandler {
     fn listen_for_response(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
         ctx.run_interval(Duration::from_millis(50), |act, c| {
             macro_rules! close_connection {
-                () => {
-                    {
-                        c.close(None);
-                        act.finished(c);
-                    }
-                };
+                () => {{
+                    c.close(None);
+                    act.finished(c);
+                }};
             }
 
             macro_rules! send_msg {
-                ($msg:expr) => {
-                    {
-                        if let Ok(data) = TryInto::<Vec<u8>>::try_into($msg) {
-                            c.write_raw(ws::Message::Binary(actix_web::web::Bytes::from(data)));
-                        } else {
-                            error!("failed to send message down websocket");
-                        }
+                ($msg:expr) => {{
+                    if let Ok(data) = TryInto::<Vec<u8>>::try_into($msg) {
+                        c.write_raw(ws::Message::Binary(actix_web::web::Bytes::from(data)));
+                    } else {
+                        error!("failed to send message down websocket");
                     }
-                }
+                }};
             }
 
             match act.rcv.try_recv() {
@@ -54,7 +50,7 @@ impl WsHandler {
                     if Into::<bool>::into(end_connection) {
                         close_connection!()
                     }
-                },
+                }
                 Ok(msg) => send_msg!(msg),
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => act.finished(c),
@@ -66,18 +62,16 @@ impl WsHandler {
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsHandler {
     fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match item {
-            Ok(ws::Message::Binary(msg)) => {
-                match Message::try_from(&msg[..]) {
-                    Ok(m) => info!("Got binary message from peer: {m:?}"),
-                    Err(e) => error!("failed to decode binary message from peer {e:?}"),
-                }
+            Ok(ws::Message::Binary(msg)) => match Message::try_from(&msg[..]) {
+                Ok(m) => info!("Got binary message from peer: {m:?}"),
+                Err(e) => error!("failed to decode binary message from peer {e:?}"),
             },
             Ok(ws::Message::Ping(msg)) => {
                 ctx.write_raw(ws::Message::Pong(msg)); //XXX this may be blocking
             }
             Ok(ws::Message::Pong(_)) => {
                 trace!("recived pong message from peer"); //XXX find a way to send ping message reguararly
-            },
+            }
             Ok(msg) => {
                 info!("recieved message from peer {msg:?}");
             }
@@ -105,7 +99,9 @@ pub async fn websocket(
     tx.send(Message::AuthReq(server_id)).await.unwrap();
 
     if state.servers.read().await.contains_key(&server_id) {
-        return Ok(HttpResponse::Forbidden().body("another server is already authenticated with this id"))
+        return Ok(
+            HttpResponse::Forbidden().body("another server is already authenticated with this id")
+        );
     }
 
     let mut servers = state.unauthenticated_servers.write().await;

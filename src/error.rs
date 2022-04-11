@@ -1,9 +1,7 @@
 use crate::db::DbBackendError;
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum HttpError {
-
-}
+pub enum HttpError {}
 
 impl From<DbBackendError> for HttpError {
     fn from(_: DbBackendError) -> Self {
@@ -23,6 +21,4 @@ impl std::fmt::Display for HttpError {
     }
 }
 
-impl std::error::Error for HttpError {
-
-}
+impl std::error::Error for HttpError {}

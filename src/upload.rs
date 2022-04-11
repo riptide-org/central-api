@@ -1,14 +1,22 @@
-use actix_web::{HttpRequest, web::{Payload, Data, Path}, HttpResponse, post};
+use actix_web::{
+    post,
+    web::{Data, Path, Payload},
+    HttpRequest, HttpResponse,
+};
 use futures::StreamExt;
 use log::error;
 
-use crate::{State, ServerId};
-
+use crate::{ServerId, State};
 
 /// Internal upload handler function for a waiting client
 // Dev note: This code is split off in a seperate handler function to allow testing
 // via implementations/mocking.
-async fn __upload(_: HttpRequest, mut payload: Payload, state: Data<State>, path: Path<ServerId>) -> HttpResponse {
+async fn __upload(
+    _: HttpRequest,
+    mut payload: Payload,
+    state: Data<State>,
+    path: Path<ServerId>,
+) -> HttpResponse {
     let upload_id = path.into_inner();
 
     //Get uploadee channel
@@ -21,17 +29,20 @@ async fn __upload(_: HttpRequest, mut payload: Payload, state: Data<State>, path
     while let Some(chk) = payload.next().await {
         if let Err(e) = sender.send(chk).await {
             error!("problem sending payload {:?}", e);
-            return HttpResponse::InternalServerError()
-                .body("upload failed");
+            return HttpResponse::InternalServerError().body("upload failed");
         };
-    };
+    }
 
-    HttpResponse::Ok()
-        .body("succesfully uploaded")
+    HttpResponse::Ok().body("succesfully uploaded")
 }
 
 /// Upload a file or metadata to a waiting client
 #[post("/upload/{upload_id}")]
-pub async fn upload(req: HttpRequest, payload: Payload, state: Data<State>, path: Path<ServerId>) -> HttpResponse {
+pub async fn upload(
+    req: HttpRequest,
+    payload: Payload,
+    state: Data<State>,
+    path: Path<ServerId>,
+) -> impl actix_web::Responder {
     __upload(req, payload, state, path).await
 }
