@@ -3,7 +3,7 @@ use actix_web::{
     web::{Data, Path},
     HttpRequest, HttpResponse,
 };
-use log::trace;
+use log::{error, trace};
 use rand::Rng;
 use tokio::sync::mpsc;
 use ws_com_framework::{FileId, Message};
@@ -14,8 +14,6 @@ use crate::{
 };
 
 /// Download a file from a client
-// Dev note: This code is split off in a seperate handler function to allow testing
-// via implementations/mocking.
 async fn __download(
     _: HttpRequest,
     path: Path<(ServerId, FileId)>,
@@ -27,7 +25,9 @@ async fn __download(
     //Check server is online
     let reader = state.servers.read().await;
     let server_online = reader.contains_key(&server_id); //Duplicate req #cd
+    error!("checking server...");
     if server_online {
+        error!("server onlien!");
         let (tx, mut rx) = mpsc::channel(100);
 
         let download_id = rand::thread_rng().gen();
@@ -74,11 +74,11 @@ pub async fn download(
     database: Data<Database>,
     path: Path<(ServerId, FileId)>,
 ) -> impl actix_web::Responder {
+    error!("doing things");
     __download(req, path, state, database).await
 }
 
-// #[cfg(test)]
-// mod test {
-//     use super::__download;
-
-// }
+#[cfg(test)]
+mod test {
+    use super::__download;
+}

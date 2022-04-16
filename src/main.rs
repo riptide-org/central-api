@@ -40,7 +40,9 @@ use ws_com_framework::{FileId, Message, Passcode, PublicId as ServerId};
 
 type RequestId = u64;
 
+#[derive(Debug)]
 pub struct State {
+    //XXX: Merge servers + unauthenticated_servers into one? May improve throughput
     unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<Message>>>,
     servers: RwLock<HashMap<ServerId, mpsc::Sender<Message>>>,
     requests: RwLock<HashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,

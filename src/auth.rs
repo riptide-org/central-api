@@ -1,6 +1,6 @@
 use actix_web::{post, web::Data, HttpResponse};
 use log::error;
-use rand::{Rng, distributions::Alphanumeric};
+use rand::{distributions::Alphanumeric, Rng};
 use ws_com_framework::{Passcode, PublicId};
 
 use crate::{
@@ -46,12 +46,12 @@ async fn __register(state: impl DbBackend) -> Result<HttpResponse, HttpError> {
 
     //Return this new public_id/passcode pair
     Ok(HttpResponse::Created()
-    .content_type("application/json")
-    .body(format!(
-        "{{\"public_id\":\"{}\",\"passcode\":\"{}\"}}",
-        id,
-        unsafe { std::str::from_utf8_unchecked(&passcode) }
-    )))
+        .content_type("application/json")
+        .body(format!(
+            "{{\"public_id\":{},\"passcode\":\"{}\"}}",
+            id,
+            unsafe { std::str::from_utf8_unchecked(&passcode) }
+        )))
 }
 
 #[post("/register")]
