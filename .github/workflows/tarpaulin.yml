@@ -1,9 +1,9 @@
 name: Coverage
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
 
 jobs:
   check:
@@ -19,7 +19,7 @@ jobs:
         uses: actions-rs/tarpaulin@v0.1
         with:
           version: '0.15.0'
-          args: '--all -- --test-threads 1'
+          args: '--all'
 
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v1.0.2
