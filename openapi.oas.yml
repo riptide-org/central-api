@@ -1,7 +1,7 @@
 openapi: 3.0.0
 info:
   description: Central API for the RipTide application. Handles communication between clients and agents, effectively acting as a translation layer between http and websockets.
-  version: "0.1.0"
+  version: "0.2.0"
   license:
     name: "MIT"
     url: https://opensource.org/licenses/MIT

@@ -1,159 +1,318 @@
-//! Contains all database functionality
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
-use crate::error::Error;
-use crate::structs::{Agent, AgentRequest, AgentUpdateRequest};
-use crate::Config;
-use mobc::{Connection, Pool};
-use mobc_postgres::{tokio_postgres, PgConnectionManager};
-use std::fs;
-use std::time::Duration;
-use tokio_postgres::{Config as TokioPGConfig, NoTls, Row};
+use crate::{models::*, ServerId};
+use actix_web::web::{self, Data};
+use async_trait::async_trait;
+use diesel::{
+    r2d2::{ConnectionManager, Pool},
+    ExpressionMethods, QueryDsl, RunQueryDsl, SqliteConnection,
+};
+use log::trace;
+use sha2::{Digest, Sha256};
+use tokio::sync::RwLock;
+use ws_com_framework::Passcode;
 
-/// Maximum number of open db connections
-const DB_POOL_MAX_OPEN: u64 = 32;
+type DbPool = Pool<ConnectionManager<SqliteConnection>>;
 
-/// Maximum number of idle db connections
-const DB_POOL_MAX_IDLE: u64 = 8;
+pub struct Database(DbPool);
 
-/// How long we will wait for a db connection before timing out.
-const DB_POOL_TIMEOUT_SECONDS: u64 = 15;
-
-///The location of the initalisation file for the db.
-const INIT_SQL: &str = "./config/db.sql";
-
-pub type DBCon = Connection<PgConnectionManager<NoTls>>;
-pub type DBPool = Pool<PgConnectionManager<NoTls>>;
-
-///A value can be pulled from the databse if it has this trait implemented.
-pub trait FromDataBase: Sized {
-    type Error: Send + std::fmt::Debug + Into<Error>;
-    fn from_database(data: &Row) -> Result<Self, Self::Error>;
+/// An entirely insecure mock implementation of a backend database for development and testing purposes
+pub struct MockDb {
+    store: RwLock<HashMap<ServerId, Passcode>>,
 }
 
-pub fn create_pool(cfg: &Config) -> Result<DBPool, mobc::Error<tokio_postgres::Error>> {
-    let mut config = TokioPGConfig::new();
-    config
-        .host(&cfg.database_host)
-        .port(cfg.database_port)
-        .dbname(&cfg.database_name)
-        .user(&cfg.database_user)
-        .password(&cfg.database_pass);
+#[async_trait]
+pub trait DbBackend {
+    /// `new` will attempt
+    async fn new() -> Result<Self, DbBackendError>
+    where
+        Self: Sized;
 
-    let manager = PgConnectionManager::new(config.clone(), NoTls);
-    Ok(Pool::builder()
-        .max_open(DB_POOL_MAX_OPEN)
-        .max_idle(DB_POOL_MAX_IDLE)
-        .get_timeout(Some(Duration::from_secs(DB_POOL_TIMEOUT_SECONDS)))
-        .build(manager))
+    /// `save_entry` will take a passcode and `ServerId` and save it into the server.
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError>;
+
+    /// `validate_server` will take a provided `ServerId` and return true if the provided passcode matches.
+    /// It will return false if the provided passcode fails validation.
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError>;
+
+    /// `contains_entry` will validate whether the provided `ServerId` exists in the database
+    async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError>;
+
+    /// `close` will attempt to destroy this connection to the database
+    async fn close(self) -> Result<(), DbBackendError>;
 }
 
-pub async fn get_db_con(pool: &DBPool) -> Result<DBCon, Error> {
-    pool.get().await.map_err(Error::DBPool)
+impl Database {
+    /// Attempt to initalise the database with generic sql
+    pub async fn init(&self) -> Result<(), DbBackendError> {
+        let init_sql: &str = include_str!("../migrations/2022-04-10-095111_create_agents/up.sql");
+
+        let conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+
+        web::block(move || diesel::sql_query(init_sql).execute(&conn))
+            .await
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        Ok(())
+    }
 }
 
-pub async fn init_db(pool: &DBPool) -> Result<(), Error> {
-    let init_file = fs::read_to_string(INIT_SQL)?;
-    let conn = get_db_con(pool).await?;
-    conn.batch_execute(&init_file)
+#[async_trait]
+impl DbBackend for Database {
+    async fn new() -> Result<Self, DbBackendError> {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let db = Self (
+            Pool::builder()
+                .build(ConnectionManager::<SqliteConnection>::new(&database_url))
+                .map_err(|e| DbBackendError::InitFailed(e.to_string()))?,
+        );
+        db.init().await?;
+        Ok(db)
+    }
+
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError> {
+        use crate::schema::agents::dsl::*;
+
+        let mut hasher = Sha256::new();
+        hasher.update(passcode);
+
+        let new_agent: NewAgent = NewAgent {
+            public_id: server_id as i64,
+            secure_key: hasher.finalize().to_vec(), //hash passcode
+        };
+
+        let conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+
+        //TODO: check if exists already and save that passcode to return as Some(Passcode) at end
+
+        //run in a blocking context
+        web::block(move || {
+            diesel::insert_into(agents)
+                .values(&new_agent)
+                .execute(&conn)
+        })
         .await
-        .map_err(Error::DBInit)?;
-    Ok(())
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        Ok(None)
+    }
+
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError> {
+        use crate::schema::agents::dsl::*;
+
+        let conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+        let server_id: i64 = *server_id as i64;
+        let users = web::block(move || {
+            agents
+                .filter(public_id.eq(server_id))
+                .load::<crate::models::Agent>(&conn)
+        })
+        .await
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        if !users.is_empty() {
+            // UNIQUE constraint means there will never be more than 1 result
+            let cmp = &users[0].secure_key;
+            let mut hasher = Sha256::new();
+            hasher.update(passcode);
+            Ok(hasher.finalize().to_vec() == *cmp)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
+        use crate::schema::agents::dsl::*;
+
+        let conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+        let server_id: i64 = *server_id as i64;
+
+        let users: i64 = web::block(move || {
+            agents
+                .filter(public_id.eq(server_id))
+                .count()
+                .get_result(&conn)
+        })
+        .await
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        Ok(users != 0)
+    }
+
+    async fn close(self) -> Result<(), DbBackendError> {
+        drop(self);
+        Ok(())
+    }
 }
 
-pub enum Search {
-    #[allow(dead_code)]
-    Id(usize),
-    PublicId(String),
+#[async_trait]
+impl DbBackend for MockDb {
+    async fn new() -> Result<Self, DbBackendError> {
+        Ok(Self {
+            store: Default::default(),
+        })
+    }
+
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError> {
+        Ok(self.store.write().await.insert(server_id, passcode))
+    }
+
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError> {
+        match self.store.read().await.get(server_id) {
+            Some(s) if s == passcode => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
+        match self.store.read().await.get(server_id) {
+            Some(_) => Ok(true),
+            None => Ok(false),
+        }
+    }
+
+    async fn close(self) -> Result<(), DbBackendError> {
+        drop(self); //XXX: check how RwLocks are dropped, could be problematic?
+        Ok(())
+    }
 }
 
-impl Search {
-    fn get_search_term(self) -> String {
+#[async_trait]
+impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
+    async fn new() -> Result<Data<T>, DbBackendError> {
+        Ok(Data::new(T::new().await?))
+    }
+
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError> {
+        self.deref().save_entry(server_id, passcode).await
+    }
+
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError> {
+        self.deref().validate_server(server_id, passcode).await
+    }
+
+    async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
+        self.deref().contains_entry(server_id).await
+    }
+
+    async fn close(self) -> Result<(), DbBackendError> {
+        match std::sync::Arc::<T>::try_unwrap(self.into_inner()) {
+            Ok(r) => r.close().await,
+            Err(_) => {
+                trace!("attempted closure with more than 1 strong reference");
+                Ok(())
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
+    async fn new() -> Result<Arc<T>, DbBackendError> {
+        Ok(Arc::new(T::new().await?))
+    }
+
+    async fn save_entry(
+        &self,
+        server_id: ServerId,
+        passcode: Passcode,
+    ) -> Result<Option<Passcode>, DbBackendError> {
+        self.deref().save_entry(server_id, passcode).await
+    }
+
+    async fn validate_server(
+        &self,
+        server_id: &ServerId,
+        passcode: &Passcode,
+    ) -> Result<bool, DbBackendError> {
+        self.deref().validate_server(server_id, passcode).await
+    }
+
+    async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
+        self.deref().contains_entry(server_id).await
+    }
+
+    async fn close(self) -> Result<(), DbBackendError> {
+        match std::sync::Arc::<T>::try_unwrap(self) {
+            Ok(r) => r.close().await,
+            Err(_) => {
+                trace!("attempted closure with more than 1 strong reference");
+                Ok(())
+            }
+        }
+    }
+}
+
+//XXX: this could be refactored to export internal types? Would be better for error handling
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbBackendError {
+    AlreadyExist,
+    NoConnectionAvailable(String),
+    QueryFailed(String),
+    InitFailed(String),
+}
+
+impl std::fmt::Display for DbBackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Search::Id(i) => format!("{} = {}", "id", i),
-            Search::PublicId(s) => format!("{} = '{}'", "public_id", s),
+            DbBackendError::AlreadyExist => write!(f, "entry already exists"),
+            DbBackendError::NoConnectionAvailable(e) => {
+                write!(f, "connection is unavailable due to error: {}", e)
+            }
+            DbBackendError::QueryFailed(e) => write!(f, "query failed due to error: {}", e),
+            DbBackendError::InitFailed(e) => {
+                write!(f, "initalise database failed due to error: {}", e)
+            }
         }
     }
-
-    pub async fn find(self, db_pool: &DBPool) -> Result<Option<Agent>, Error> {
-        let mut s = search_database(db_pool, self).await?;
-        if s.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(s.remove(0)))
-    }
 }
 
-async fn search_database(db_pool: &DBPool, search: Search) -> Result<Vec<Agent>, Error> {
-    let conn = get_db_con(db_pool).await?;
-
-    let rows = conn
-        .query(
-            format!(
-                "
-                SELECT * from agents
-                WHERE {}
-                ORDER BY created_at DESC
-            ",
-                search.get_search_term()
-            )
-            .as_str(),
-            &[],
-        )
-        .await
-        .map_err(Error::DBQuery)?;
-
-    rows.iter().map(|r| Agent::from_database(r)).collect()
-}
-
-pub async fn add_agent(db_pool: &DBPool, body: &AgentRequest) -> Result<Agent, Error> {
-    let conn = get_db_con(db_pool).await?;
-    let row = conn
-        .query_one(
-            "
-            INSERT INTO agents (public_id, secure_key)
-            VALUES ($1, $2)
-            RETURNING *;
-        ",
-            &[&body.public_id(), &body.secure_key_hashed()],
-        )
-        .await
-        .map_err(Error::DBQuery)?;
-
-    Agent::from_database(&row)
-}
-
-pub async fn update_agent(
-    db_pool: &DBPool,
-    id: &str,
-    body: AgentUpdateRequest,
-) -> Result<Agent, Error> {
-    let conn = get_db_con(db_pool).await?;
-    let row = conn
-        .query_one(
-            "
-            UPDATE agents
-            SET last_signin = $1
-            WHERE public_id = $2
-            RETURNING *;
-        ",
-            &[&body.last_signin(), &id],
-        )
-        .await
-        .map_err(Error::DBQuery)?;
-
-    Agent::from_database(&row)
-}
-
-#[allow(dead_code)]
-pub async fn delete_agent(db_pool: &DBPool, id: &usize) -> Result<u64, Error> {
-    let conn = get_db_con(db_pool).await?;
-    conn.execute(
-        "
-            DELETE FROM agents
-            WHERE id = $1
-        ",
-        &[&(*id as i64)],
-    )
-    .await
-    .map_err(Error::DBQuery)
-}
+impl std::error::Error for DbBackendError {}

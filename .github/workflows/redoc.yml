@@ -2,7 +2,7 @@ name: OAS Docs
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
     paths:
       - '*.oas.yml'
 

@@ -1,2 +1,6 @@
 /target
 /certs
+redoc-static.html
+debug.rs
+.env
+*.db
