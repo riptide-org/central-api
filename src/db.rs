@@ -73,11 +73,13 @@ impl Database {
 impl DbBackend for Database {
     async fn new() -> Result<Self, DbBackendError> {
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        Ok(Self(
+        let db = Self (
             Pool::builder()
                 .build(ConnectionManager::<SqliteConnection>::new(&database_url))
                 .map_err(|e| DbBackendError::InitFailed(e.to_string()))?,
-        ))
+        );
+        db.init().await?;
+        Ok(db)
     }
 
     async fn save_entry(

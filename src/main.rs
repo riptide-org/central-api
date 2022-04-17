@@ -32,7 +32,7 @@ use db::{Database, DbBackend};
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, RwLock};
-use ws_com_framework::{Message, Passcode, PublicId as ServerId};
+use ws_com_framework::{Message, PublicId as ServerId};
 
 type RequestId = u64;
 

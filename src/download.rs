@@ -3,7 +3,7 @@ use actix_web::{
     web::{Data, Path},
     HttpRequest, HttpResponse,
 };
-use log::{error, trace};
+use log::trace;
 use rand::Rng;
 use tokio::sync::mpsc;
 use ws_com_framework::{FileId, Message};

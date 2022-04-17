@@ -1,5 +1,4 @@
-use crate::{schema::*, Passcode, ServerId};
-use diesel::prelude::*;
+use crate::schema::*;
 
 #[derive(Insertable)]
 #[table_name = "agents"]
