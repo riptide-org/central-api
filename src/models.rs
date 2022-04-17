@@ -1,6 +1,6 @@
 use crate::schema::*;
 
-#[derive(Insertable)]
+#[derive(Debug, Insertable)]
 #[table_name = "agents"]
 pub struct NewAgent {
     pub public_id: i64,

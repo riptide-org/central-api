@@ -10,12 +10,8 @@ use ws_com_framework::{FileId, Message};
 
 use crate::{ServerId, State};
 
-async fn __metadata(
-    _: HttpRequest,
-    path: Path<(ServerId, FileId)>,
-    state: Data<State>,
-) -> HttpResponse {
-    let (server_id, file_id) = path.into_inner();
+async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpResponse {
+    let (server_id, file_id) = path;
     trace!("metadata request recieved for {}, {}", server_id, file_id);
 
     //Check server is online
@@ -53,7 +49,7 @@ async fn __metadata(
 
         //create a streaming response
         HttpResponse::Ok()
-            .content_type("application/json")
+            .content_type("application/octet-stream")
             .streaming(payload)
     } else {
         trace!(
@@ -62,18 +58,14 @@ async fn __metadata(
             server_id
         );
         HttpResponse::NotFound()
-            .content_type("text/html")
+            .content_type("plain/text")
             .body("requested resource not found, the server may not be connected")
     }
 }
 
 /// Download a file from a client
-async fn __download(
-    _: HttpRequest,
-    path: Path<(ServerId, FileId)>,
-    state: Data<State>,
-) -> HttpResponse {
-    let (server_id, file_id) = path.into_inner();
+async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpResponse {
+    let (server_id, file_id) = path;
     trace!("download request recieved for {}, {}", server_id, file_id);
 
     //Check server is online
@@ -112,7 +104,7 @@ async fn __download(
 
         //create a streaming response
         HttpResponse::Ok()
-            .content_type("text/html")
+            .content_type("application/octet-stream")
             .streaming(payload)
     } else {
         trace!(
@@ -121,7 +113,7 @@ async fn __download(
             server_id
         );
         HttpResponse::NotFound()
-            .content_type("text/html")
+            .content_type("plain/text")
             .body("requested resource not found, the server may not be connected")
     }
 }
@@ -129,23 +121,221 @@ async fn __download(
 /// Download a file from a client
 #[get("/download/{server_id}/{file_id}")]
 pub async fn download(
-    req: HttpRequest,
+    _: HttpRequest,
     state: Data<State>,
     path: Path<(ServerId, FileId)>,
 ) -> impl actix_web::Responder {
-    __download(req, path, state).await
+    let (s_id, f_id) = path.into_inner();
+    __download((s_id, f_id), state).await
 }
 
 #[get("/metadata/{server_id}/{file_id}")]
 pub async fn metadata(
-    req: HttpRequest,
+    _: HttpRequest,
     state: Data<State>,
     path: Path<(ServerId, FileId)>,
 ) -> impl actix_web::Responder {
-    __metadata(req, path, state).await
+    let (s_id, f_id) = path.into_inner();
+    __metadata((s_id, f_id), state).await
 }
 
 #[cfg(test)]
+#[cfg(not(tarpaulin_include))]
 mod test {
-    // use super::__download;
+    use actix_web::{
+        body::MessageBody,
+        error::PayloadError,
+        http::StatusCode,
+        web::{self, Bytes},
+    };
+    use futures::future;
+    use std::collections::HashMap;
+    use tokio::{
+        pin,
+        sync::{mpsc::Sender, RwLock},
+    };
+    use ws_com_framework::Message;
+
+    use crate::{RequestId, State};
+
+    use super::{__download, __metadata};
+
+    /// Test downloading a file
+    #[tokio::test]
+    async fn test_download() {
+        let server_id = 45;
+        let file_id = 34;
+
+        let state = web::Data::new(State {
+            unauthenticated_servers: Default::default(),
+            servers: Default::default(),
+            requests: RwLock::new(HashMap::new()),
+            base_url: "https://localhost:8080".into(),
+        });
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+        state.servers.write().await.insert(server_id, tx);
+
+        let task_state = state.clone();
+        let handle = tokio::task::spawn(async move {
+            if let Some(Message::UploadTo(recv_file_id, recv_upload_url)) = rx.recv().await {
+                //Validate that the url contains the upload_id somewhere
+                let requests: HashMap<RequestId, Sender<Result<Bytes, PayloadError>>> =
+                    task_state.requests.read().await.clone();
+                let upload_id = requests.clone().into_keys().next().unwrap();
+                let sender = requests.into_values().next().unwrap();
+
+                assert_eq!(recv_file_id, file_id);
+                assert!(recv_upload_url.contains(&format!("{upload_id}")));
+
+                sender
+                    .send(Ok(actix_web::web::Bytes::copy_from_slice(
+                        b"some test data",
+                    )))
+                    .await
+                    .unwrap();
+            } else {
+                panic!("sent no message, or wrong message");
+            }
+        });
+
+        let resp = __download((server_id, file_id), state.clone()).await;
+
+        handle.await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert_eq!(
+            resp.headers().get("Content-Type").unwrap(),
+            "application/octet-stream"
+        );
+
+        let body = resp.into_body();
+        pin!(body);
+
+        let bytes = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
+        assert_eq!(
+            bytes.unwrap().unwrap(),
+            web::Bytes::from_static(b"some test data")
+        );
+    }
+
+    /// Test downloading a file without a server connected
+    #[tokio::test]
+    async fn test_download_disconnected() {
+        let server_id = 45;
+        let file_id = 34;
+
+        let state = web::Data::new(State {
+            unauthenticated_servers: Default::default(),
+            servers: Default::default(),
+            requests: RwLock::new(HashMap::new()),
+            base_url: "https://localhost:8080".into(),
+        });
+
+        let resp = __download((server_id, file_id), state.clone()).await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        assert_eq!(resp.headers().get("Content-Type").unwrap(), "plain/text");
+
+        let body = resp.into_body();
+        pin!(body);
+
+        let bytes = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
+        assert_eq!(
+            bytes.unwrap().unwrap(),
+            web::Bytes::from_static(
+                b"requested resource not found, the server may not be connected"
+            )
+        );
+    }
+
+    /// Test getting metadata
+    #[tokio::test]
+    async fn test_metadata() {
+        let server_id = 45;
+        let file_id = 34;
+
+        let state = web::Data::new(State {
+            unauthenticated_servers: Default::default(),
+            servers: Default::default(),
+            requests: RwLock::new(HashMap::new()),
+            base_url: "https://localhost:8080".into(),
+        });
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+        state.servers.write().await.insert(server_id, tx);
+
+        let task_state = state.clone();
+        let handle = tokio::task::spawn(async move {
+            if let Some(Message::MetadataReq(recv_file_id, recv_upload_id)) = rx.recv().await {
+                //Validate that the url contains the upload_id somewhere
+                let requests: HashMap<RequestId, Sender<Result<Bytes, PayloadError>>> =
+                    task_state.requests.read().await.clone();
+                let upload_id = requests.clone().into_keys().next().unwrap();
+                let sender = requests.into_values().next().unwrap();
+
+                assert_eq!(recv_file_id, file_id);
+                assert_eq!(recv_upload_id, upload_id);
+
+                sender
+                    .send(Ok(actix_web::web::Bytes::copy_from_slice(
+                        b"some test data",
+                    )))
+                    .await
+                    .unwrap();
+            } else {
+                panic!("sent no message, or wrong message");
+            }
+        });
+
+        let resp = __metadata((server_id, file_id), state.clone()).await;
+
+        handle.await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body();
+        pin!(body);
+
+        let bytes = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
+        assert_eq!(
+            bytes.unwrap().unwrap(),
+            web::Bytes::from_static(b"some test data")
+        );
+    }
+
+    /// Test getting metadata without a server connected
+    #[tokio::test]
+    async fn test_metadata_disconnected() {
+        let server_id = 45;
+        let file_id = 34;
+
+        let state = web::Data::new(State {
+            unauthenticated_servers: Default::default(),
+            servers: Default::default(),
+            requests: RwLock::new(HashMap::new()),
+            base_url: "https://localhost:8080".into(),
+        });
+
+        let resp = __metadata((server_id, file_id), state.clone()).await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        assert_eq!(resp.headers().get("Content-Type").unwrap(), "plain/text");
+
+        let body = resp.into_body();
+        pin!(body);
+
+        let bytes = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
+        assert_eq!(
+            bytes.unwrap().unwrap(),
+            web::Bytes::from_static(
+                b"requested resource not found, the server may not be connected"
+            )
+        );
+    }
 }

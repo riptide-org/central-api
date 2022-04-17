@@ -1,15 +1,17 @@
-// #![warn(
-//     missing_docs,
-//     missing_debug_implementations,
-//     missing_copy_implementations,
-//     trivial_casts,
-//     trivial_numeric_casts,
-//     unsafe_code,
-//     unstable_features,
-//     unused_import_braces,
-//     unused_qualifications,
-//     deprecated
-// )]
+//! The central api which handles websockets and file streams between uploaders and clients
+
+#![warn(
+    missing_docs,
+    missing_debug_implementations,
+    missing_copy_implementations,
+    trivial_casts,
+    trivial_numeric_casts,
+    unsafe_code,
+    unstable_features,
+    unused_import_braces,
+    unused_qualifications,
+    deprecated
+)]
 
 #[macro_use]
 extern crate diesel;
@@ -19,6 +21,7 @@ mod db;
 mod download;
 mod error;
 mod models;
+#[cfg(not(tarpaulin_include))]
 mod schema;
 mod upload;
 mod websockets;
@@ -26,7 +29,7 @@ mod websockets;
 use actix_web::{
     error::PayloadError,
     web::{self, Bytes},
-    App, HttpServer,
+    App, HttpServer, middleware::Logger,
 };
 use db::{Database, DbBackend};
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
@@ -36,18 +39,24 @@ use ws_com_framework::{Message, PublicId as ServerId};
 
 type RequestId = u64;
 
+/// State holds information about all current active connections and nodes
 #[derive(Debug)]
 pub struct State {
-    //XXX: Merge servers + unauthenticated_servers into one? May improve throughput
+    /// Websockets that are connected, but have not yet completed authentication
     unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<Message>>>,
+    /// Connected websockets that are valid, and have responded to a ping within the last X seconds
     servers: RwLock<HashMap<ServerId, mpsc::Sender<Message>>>,
+    /// Actively waiting requests that need an agent to respond - that also haven't timed out yet
     requests: RwLock<HashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,
+    /// The base URL of this server
     base_url: String,
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     pretty_env_logger::init();
+
+    // setup for ssl encryption
     let mut builder =
         SslAcceptor::mozilla_intermediate(SslMethod::tls()).expect("a valid ssl intermediate");
     builder
@@ -56,13 +65,17 @@ async fn main() -> std::io::Result<()> {
     builder
         .set_certificate_chain_file("certs/cert.pem")
         .expect("valid cert pem");
+
+    // initalise system default state and database
     let state = web::Data::new(State {
         unauthenticated_servers: Default::default(),
         servers: Default::default(),
         requests: RwLock::new(HashMap::new()),
-        base_url: "https://localhost:8080".into(),
+        base_url: "https://localhost:8080".into(), //readonly //XXX: pull from env
     });
     let database = web::Data::new(Database::new().await.expect("a valid database connection"));
+
+    // begin listening for connections
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
@@ -72,6 +85,7 @@ async fn main() -> std::io::Result<()> {
             .service(download::metadata)
             .service(download::download)
             .service(upload::upload)
+            .wrap(Logger::default())
     })
     .bind_openssl(("127.0.0.1", 8080), builder)?
     .run()

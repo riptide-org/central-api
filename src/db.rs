@@ -1,6 +1,9 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
-use crate::{models::*, ServerId};
+use crate::{models::{*, Agent}, ServerId};
 use actix_web::web::{self, Data};
 use async_trait::async_trait;
 use diesel::{
@@ -9,17 +12,9 @@ use diesel::{
 };
 use log::trace;
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
 use ws_com_framework::Passcode;
 
 type DbPool = Pool<ConnectionManager<SqliteConnection>>;
-
-pub struct Database(DbPool);
-
-/// An entirely insecure mock implementation of a backend database for development and testing purposes
-pub struct MockDb {
-    store: RwLock<HashMap<ServerId, Passcode>>,
-}
 
 #[async_trait]
 pub trait DbBackend {
@@ -50,6 +45,8 @@ pub trait DbBackend {
     async fn close(self) -> Result<(), DbBackendError>;
 }
 
+pub struct Database(DbPool);
+
 impl Database {
     /// Attempt to initalise the database with generic sql
     pub async fn init(&self) -> Result<(), DbBackendError> {
@@ -69,11 +66,24 @@ impl Database {
     }
 }
 
+impl Deref for Database {
+    type Target = DbPool;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Database {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 #[async_trait]
 impl DbBackend for Database {
     async fn new() -> Result<Self, DbBackendError> {
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        let db = Self (
+        let db = Self(
             Pool::builder()
                 .build(ConnectionManager::<SqliteConnection>::new(&database_url))
                 .map_err(|e| DbBackendError::InitFailed(e.to_string()))?,
@@ -132,7 +142,7 @@ impl DbBackend for Database {
         let users = web::block(move || {
             agents
                 .filter(public_id.eq(server_id))
-                .load::<crate::models::Agent>(&conn)
+                .load::<Agent>(&conn)
         })
         .await
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
@@ -173,46 +183,6 @@ impl DbBackend for Database {
 
     async fn close(self) -> Result<(), DbBackendError> {
         drop(self);
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl DbBackend for MockDb {
-    async fn new() -> Result<Self, DbBackendError> {
-        Ok(Self {
-            store: Default::default(),
-        })
-    }
-
-    async fn save_entry(
-        &self,
-        server_id: ServerId,
-        passcode: Passcode,
-    ) -> Result<Option<Passcode>, DbBackendError> {
-        Ok(self.store.write().await.insert(server_id, passcode))
-    }
-
-    async fn validate_server(
-        &self,
-        server_id: &ServerId,
-        passcode: &Passcode,
-    ) -> Result<bool, DbBackendError> {
-        match self.store.read().await.get(server_id) {
-            Some(s) if s == passcode => Ok(true),
-            _ => Ok(false),
-        }
-    }
-
-    async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
-        match self.store.read().await.get(server_id) {
-            Some(_) => Ok(true),
-            None => Ok(false),
-        }
-    }
-
-    async fn close(self) -> Result<(), DbBackendError> {
-        drop(self); //XXX: check how RwLocks are dropped, could be problematic?
         Ok(())
     }
 }
@@ -316,3 +286,61 @@ impl std::fmt::Display for DbBackendError {
 }
 
 impl std::error::Error for DbBackendError {}
+
+#[cfg(test)]
+#[cfg(not(tarpaulin_include))]
+pub mod tests {
+    use std::collections::HashMap;
+
+    use async_trait::async_trait;
+    use tokio::sync::RwLock;
+
+    use super::{DbBackend, DbBackendError};
+    use crate::ServerId;
+    use ws_com_framework::Passcode;
+
+    /// An entirely insecure mock implementation of a backend database for development and testing purposes
+    pub struct MockDb {
+        store: RwLock<HashMap<ServerId, Passcode>>,
+    }
+
+    #[async_trait]
+    impl DbBackend for MockDb {
+        async fn new() -> Result<Self, DbBackendError> {
+            Ok(Self {
+                store: Default::default(),
+            })
+        }
+
+        async fn save_entry(
+            &self,
+            server_id: ServerId,
+            passcode: Passcode,
+        ) -> Result<Option<Passcode>, DbBackendError> {
+            Ok(self.store.write().await.insert(server_id, passcode))
+        }
+
+        async fn validate_server(
+            &self,
+            server_id: &ServerId,
+            passcode: &Passcode,
+        ) -> Result<bool, DbBackendError> {
+            match self.store.read().await.get(server_id) {
+                Some(s) if s == passcode => Ok(true),
+                _ => Ok(false),
+            }
+        }
+
+        async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
+            match self.store.read().await.get(server_id) {
+                Some(_) => Ok(true),
+                None => Ok(false),
+            }
+        }
+
+        async fn close(self) -> Result<(), DbBackendError> {
+            drop(self); //XXX: check how RwLocks are dropped, could be problematic?
+            Ok(())
+        }
+    }
+}

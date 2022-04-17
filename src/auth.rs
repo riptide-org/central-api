@@ -38,7 +38,7 @@ async fn __register(state: impl DbBackend) -> Result<HttpResponse, HttpError> {
         .body(format!(
             "{{\"public_id\":{},\"passcode\":\"{}\"}}",
             id,
-            unsafe { std::str::from_utf8_unchecked(&passcode) }
+            std::str::from_utf8(&passcode).expect("valid utf")
         )))
 }
 
@@ -48,13 +48,15 @@ pub async fn register(state: Data<Database>) -> impl actix_web::Responder {
 }
 
 #[cfg(test)]
+#[cfg(not(tarpaulin_include))]
 mod test {
     use actix_web::body::MessageBody;
     use serde::Deserialize;
     use std::sync::Arc;
 
     use super::__register;
-    use crate::db::{Database, DbBackend, MockDb};
+    use crate::db::tests::MockDb;
+    use crate::db::{Database, DbBackend};
 
     #[derive(Debug, Deserialize)]
     struct Id {

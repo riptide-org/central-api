@@ -372,3 +372,9 @@ pub async fn websocket(
 ) -> impl Responder {
     __websocket(req, stream, state, database, path).await
 }
+
+#[cfg(test)]
+#[cfg(not(tarpaulin_include))]
+mod test {
+
+}

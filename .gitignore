@@ -4,3 +4,4 @@ redoc-static.html
 debug.rs
 .env
 *.db
+lcov.info
