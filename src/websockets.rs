@@ -1,4 +1,4 @@
-use std::{time::Duration};
+use std::time::Duration;
 
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
@@ -68,7 +68,6 @@ where
         self.listen_for_response(ctx);
         self.handle_internal_comms(ctx);
         self.ping_pong(ctx);
-
     }
 
     fn stopping(&mut self, ctx: &mut Self::Context) -> actix::Running {
@@ -206,15 +205,26 @@ where
                             let state = self.state.clone();
                             let fut = async move {
                                 if let Some(s) = state.requests.write().await.remove(&upload_id) {
-                                    let formatted_body = format!("{{
+                                    let formatted_body = format!(
+                                        "{{
                                         \"file_id\":{},
                                         \"exp\": {},
                                         \"crt\": {},
                                         \"file_size\": {},
                                         \"username\": \"{}\",
                                         \"file_name\": \"{}\"
-                                    }}", share.file_id, share.exp, share.crt, share.file_size, share.username, share.file_name);
-                                    if let Err(e) = s.send(Ok(actix_web::web::Bytes::from(formatted_body))).await {
+                                    }}",
+                                        share.file_id,
+                                        share.exp,
+                                        share.crt,
+                                        share.file_size,
+                                        share.username,
+                                        share.file_name
+                                    );
+                                    if let Err(e) = s
+                                        .send(Ok(actix_web::web::Bytes::from(formatted_body)))
+                                        .await
+                                    {
                                         error!("failed to send metadata response to peer, they may have timed out waiting: `{}`", e);
                                     };
                                 } else {
@@ -284,7 +294,7 @@ where
             }
             Ok(ws::Message::Pong(pong)) => {
                 trace!("recived pong message from peer");
-                if pong.as_ref() != (self.pinger-1).to_be_bytes() {
+                if pong.as_ref() != (self.pinger - 1).to_be_bytes() {
                     //pong failed
                     error!("peer send pong resposne too slowly");
                     self.finished(ctx);

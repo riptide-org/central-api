@@ -8,9 +8,7 @@ use rand::Rng;
 use tokio::sync::mpsc;
 use ws_com_framework::{FileId, Message};
 
-use crate::{
-    ServerId, State,
-};
+use crate::{ServerId, State};
 
 async fn __metadata(
     _: HttpRequest,

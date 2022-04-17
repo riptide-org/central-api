@@ -60,11 +60,10 @@ impl Database {
             .get()
             .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
 
-        web::block(move || {
-            diesel::sql_query(init_sql).execute(&conn)
-        }).await
-        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
-        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+        web::block(move || diesel::sql_query(init_sql).execute(&conn))
+            .await
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
         Ok(())
     }
