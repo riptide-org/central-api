@@ -25,18 +25,14 @@ mod websockets;
 
 use actix_web::{
     error::PayloadError,
-    get, post,
     web::{self, Bytes},
-    App, HttpRequest, HttpResponse, HttpServer,
+    App, HttpServer,
 };
 use db::{Database, DbBackend};
-use diesel::{
-    r2d2::{self, ConnectionManager},
-    SqliteConnection,
-};
+use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, RwLock};
-use ws_com_framework::{FileId, Message, Passcode, PublicId as ServerId};
+use ws_com_framework::{Message, Passcode, PublicId as ServerId};
 
 type RequestId = u64;
 
@@ -52,11 +48,19 @@ pub struct State {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     pretty_env_logger::init();
+    let mut builder =
+        SslAcceptor::mozilla_intermediate(SslMethod::tls()).expect("a valid ssl intermediate");
+    builder
+        .set_private_key_file("certs/key.pem", SslFiletype::PEM)
+        .expect("a valid private key");
+    builder
+        .set_certificate_chain_file("certs/cert.pem")
+        .expect("valid cert pem");
     let state = web::Data::new(State {
         unauthenticated_servers: Default::default(),
         servers: Default::default(),
         requests: RwLock::new(HashMap::new()),
-        base_url: "http://127.0.0.1:8080".into(),
+        base_url: "https://localhost:8080".into(),
     });
     let database = web::Data::new(Database::new().await.expect("a valid database connection"));
     HttpServer::new(move || {
@@ -65,10 +69,11 @@ async fn main() -> std::io::Result<()> {
             .app_data(database.clone())
             .service(auth::register)
             .service(websockets::websocket)
+            .service(download::metadata)
             .service(download::download)
             .service(upload::upload)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind_openssl(("127.0.0.1", 8080), builder)?
     .run()
     .await
 }

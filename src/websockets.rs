@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{time::Duration};
 
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
@@ -15,7 +15,7 @@ use crate::{
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum InternalComm {
     Authenticated,
-    ShutDownComplete
+    ShutDownComplete,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -54,6 +54,8 @@ where
     ws_state: WsState,
     /// the current authentication state of the server
     authentication: Authentication,
+    /// a tracker for the current ping status
+    pinger: u64,
 }
 
 impl<T> Actor for WsHandler<T>
@@ -65,6 +67,8 @@ where
     fn started(&mut self, ctx: &mut Self::Context) {
         self.listen_for_response(ctx);
         self.handle_internal_comms(ctx);
+        self.ping_pong(ctx);
+
     }
 
     fn stopping(&mut self, ctx: &mut Self::Context) -> actix::Running {
@@ -126,7 +130,6 @@ where
 
             match act.rx.try_recv() {
                 Ok(Message::Close) => close_connection!(),
-                Ok(Message::Error(reason, kind)) => send_msg!(Message::Error(reason, kind)),
                 Ok(msg) => send_msg!(msg),
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => close_connection!(),
@@ -141,11 +144,22 @@ where
             }
 
             match act.internal_rx.try_recv() {
-                Ok(InternalComm::Authenticated) => act.authentication = Authentication::Authenticated,
+                Ok(InternalComm::Authenticated) => {
+                    act.authentication = Authentication::Authenticated
+                }
                 Ok(InternalComm::ShutDownComplete) => act.ws_state = WsState::Stopped,
                 Err(mpsc::error::TryRecvError::Empty) => {}
-                Err(mpsc::error::TryRecvError::Disconnected) => panic!("internal communication pipeline should never stop"),
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    panic!("internal communication pipeline should never stop")
+                }
             };
+        });
+    }
+
+    fn ping_pong(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
+        ctx.run_interval(Duration::from_secs(20), |act, c| {
+            c.ping(&act.pinger.to_be_bytes());
+            act.pinger += 1;
         });
     }
 }
@@ -192,7 +206,17 @@ where
                             let state = self.state.clone();
                             let fut = async move {
                                 if let Some(s) = state.requests.write().await.remove(&upload_id) {
-                                    //TODO
+                                    let formatted_body = format!("{{
+                                        \"file_id\":{},
+                                        \"exp\": {},
+                                        \"crt\": {},
+                                        \"file_size\": {},
+                                        \"username\": \"{}\",
+                                        \"file_name\": \"{}\"
+                                    }}", share.file_id, share.exp, share.crt, share.file_size, share.username, share.file_name);
+                                    if let Err(e) = s.send(Ok(actix_web::web::Bytes::from(formatted_body))).await {
+                                        error!("failed to send metadata response to peer, they may have timed out waiting: `{}`", e);
+                                    };
                                 } else {
                                     trace!("request timed out before agent sent response");
                                 }
@@ -258,8 +282,13 @@ where
             Ok(ws::Message::Ping(msg)) => {
                 ctx.write_raw(ws::Message::Pong(msg));
             }
-            Ok(ws::Message::Pong(_)) => {
-                trace!("recived pong message from peer"); //XXX find a way to send ping message reguararly
+            Ok(ws::Message::Pong(pong)) => {
+                trace!("recived pong message from peer");
+                if pong.as_ref() != (self.pinger-1).to_be_bytes() {
+                    //pong failed
+                    error!("peer send pong resposne too slowly");
+                    self.finished(ctx);
+                }
             }
             Ok(ws::Message::Close(reason)) => {
                 info!("peer closing {reason:?}");
@@ -267,7 +296,7 @@ where
             }
             Ok(msg) => {
                 //Any other message is an error
-                debug!("got unexpected message from peer: {msg:?}");
+                error!("got unexpected message from peer: {msg:?}");
                 close_unexpected_message!(msg);
                 self.finished(ctx);
             }
@@ -316,6 +345,7 @@ where
             authentication: Authentication::Unauthenticated,
             internal_tx: i_tx,
             internal_rx: i_rx,
+            pinger: 0,
         },
         &req,
         stream,

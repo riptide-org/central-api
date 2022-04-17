@@ -1,23 +1,11 @@
 use actix_web::{post, web::Data, HttpResponse};
 use log::error;
 use rand::{distributions::Alphanumeric, Rng};
-use ws_com_framework::{Passcode, PublicId};
 
 use crate::{
     db::{Database, DbBackend, DbBackendError},
     error::HttpError,
 };
-
-pub async fn validate_login(
-    server_id: PublicId,
-    passcode: Passcode,
-    state: impl DbBackend,
-) -> Result<bool, HttpError> {
-    state
-        .validate_server(&server_id, &passcode)
-        .await
-        .map_err(|e| e.into())
-}
 
 /// Attempt to register a new webserver with the api
 async fn __register(state: impl DbBackend) -> Result<HttpResponse, HttpError> {
@@ -61,20 +49,78 @@ pub async fn register(state: Data<Database>) -> impl actix_web::Responder {
 
 #[cfg(test)]
 mod test {
+    use actix_web::body::MessageBody;
+    use serde::Deserialize;
     use std::sync::Arc;
 
     use super::__register;
-    use crate::db::{DbBackend, MockDb};
+    use crate::db::{Database, DbBackend, MockDb};
+
+    #[derive(Debug, Deserialize)]
+    struct Id {
+        public_id: u64,
+        passcode: String,
+    }
 
     #[tokio::test]
     async fn test_registering_api() {
-        const CONVERSION_COUNT: u64 = 1_000_000;
+        const CONVERSION_COUNT: u64 = 100_000;
         let db = Arc::new(MockDb::new().await.unwrap());
 
-        for i in 0..CONVERSION_COUNT {
-            let item = __register(db.clone()).await.expect("registered properly");
+        let mut keys = Vec::with_capacity(CONVERSION_COUNT as usize);
+
+        for _ in 0..CONVERSION_COUNT {
+            let i = __register(db.clone()).await.expect("registered properly");
+            //parse from body
+            let body_bytes = i.into_body().try_into_bytes().unwrap();
+            let body = std::str::from_utf8(&body_bytes).expect("valid string");
+            let id: Id = serde_json::from_str(body).expect("unabel to parse from json");
+            keys.push(id);
         }
 
-        //XXX: validate output here?
+        for i in 0..CONVERSION_COUNT {
+            let id = &keys[i as usize];
+            assert!(db
+                .validate_server(&id.public_id, &id.passcode.as_bytes().to_vec())
+                .await
+                .expect("able to login"));
+        }
+    }
+
+    //XXX: on failure remove the db file (e.g. ON DROP)
+    #[tokio::test]
+    async fn test_registering_api_real_db() {
+        const CONVERSION_COUNT: u64 = 100;
+
+        std::fs::write("./test-db.db", b"").expect("able to write to db");
+        let tmp_var = std::env::var("DATABASE_URL").unwrap_or_else(|_| String::from(""));
+        std::env::set_var("DATABASE_URL", "./test-db.db");
+
+        let db = Arc::new(Database::new().await.unwrap());
+
+        db.init().await.expect("valid db");
+
+        let mut keys = Vec::with_capacity(CONVERSION_COUNT as usize);
+
+        for _ in 0..CONVERSION_COUNT {
+            let i = __register(db.clone()).await.expect("registered properly");
+            //parse from body
+            let body_bytes = i.into_body().try_into_bytes().unwrap();
+            let body = std::str::from_utf8(&body_bytes).expect("valid string");
+            let id: Id = serde_json::from_str(body).expect("unabel to parse from json");
+            keys.push(id);
+        }
+
+        for i in 0..CONVERSION_COUNT {
+            let id = &keys[i as usize];
+            let result = db
+                .validate_server(&id.public_id, &id.passcode.as_bytes().to_vec())
+                .await
+                .expect("able to login");
+            assert!(result);
+        }
+
+        std::env::set_var("DATABASE_URL", tmp_var);
+        std::fs::remove_file("./test-db.db").expect("able to write to db");
     }
 }

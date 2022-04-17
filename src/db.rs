@@ -50,6 +50,26 @@ pub trait DbBackend {
     async fn close(self) -> Result<(), DbBackendError>;
 }
 
+impl Database {
+    /// Attempt to initalise the database with generic sql
+    pub async fn init(&self) -> Result<(), DbBackendError> {
+        let init_sql: &str = include_str!("../migrations/2022-04-10-095111_create_agents/up.sql");
+
+        let conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+
+        web::block(move || {
+            diesel::sql_query(init_sql).execute(&conn)
+        }).await
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl DbBackend for Database {
     async fn new() -> Result<Self, DbBackendError> {
@@ -117,7 +137,7 @@ impl DbBackend for Database {
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
-        if users.len() > 1 {
+        if !users.is_empty() {
             // UNIQUE constraint means there will never be more than 1 result
             let cmp = &users[0].secure_key;
             let mut hasher = Sha256::new();

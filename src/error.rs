@@ -1,11 +1,13 @@
 use crate::db::DbBackendError;
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum HttpError {}
+pub enum HttpError {
+    Other(String), //TODO
+}
 
 impl From<DbBackendError> for HttpError {
-    fn from(_: DbBackendError) -> Self {
-        todo!()
+    fn from(e: DbBackendError) -> Self {
+        Self::Other(e.to_string())
     }
 }
 
@@ -17,7 +19,9 @@ impl From<HttpError> for actix_web::Error {
 
 impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        match self {
+            HttpError::Other(e) => write!(f, "an error occured: {}", e),
+        }
     }
 }
 
