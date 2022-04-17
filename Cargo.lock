@@ -1772,7 +1772,7 @@ checksum = "504a2476202769977a040c6364301a3f65d0cc9e3fb08600b2bda150a0488316"
 [[package]]
 name = "ws-com-framework"
 version = "1.1.0"
-source = "git+https://github.com/file-share-platform/ws-com-framework#53b2f1bc7d070ea77e8a53105e265f44e5ccd1a1"
+source = "git+https://github.com/file-share-platform/ws-com-framework?rev=d7dcd58cd2e445e2a344a1bbbdd089a5b9ee585f#d7dcd58cd2e445e2a344a1bbbdd089a5b9ee585f"
 dependencies = [
  "async-trait",
  "prost",

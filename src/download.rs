@@ -8,7 +8,7 @@ use rand::Rng;
 use tokio::sync::mpsc;
 use ws_com_framework::{FileId, Message};
 
-use crate::{ServerId, State};
+use crate::{ServerId, State, websockets::InternalComm};
 
 async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpResponse {
     let (server_id, file_id) = path;
@@ -34,7 +34,7 @@ async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
         let connected_servers = state.servers.read().await;
         let uploader_ws = connected_servers.get(&server_id).unwrap(); //Duplicate req #cd
         uploader_ws
-            .send(Message::MetadataReq(file_id, download_id))
+            .send(InternalComm::SendMessage(Message::MetadataReq(file_id, download_id)))
             .await
             .unwrap();
 
@@ -89,7 +89,7 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
         let connected_servers = state.servers.read().await;
         let uploader_ws = connected_servers.get(&server_id).unwrap(); //Duplicate req #cd
         uploader_ws
-            .send(Message::UploadTo(file_id, msg))
+            .send(InternalComm::SendMessage(Message::UploadTo(file_id, msg)))
             .await
             .unwrap();
 
@@ -156,7 +156,7 @@ mod test {
     };
     use ws_com_framework::Message;
 
-    use crate::{RequestId, State};
+    use crate::{RequestId, State, websockets::InternalComm};
 
     use super::{__download, __metadata};
 
@@ -179,7 +179,7 @@ mod test {
 
         let task_state = state.clone();
         let handle = tokio::task::spawn(async move {
-            if let Some(Message::UploadTo(recv_file_id, recv_upload_url)) = rx.recv().await {
+            if let Some(InternalComm::SendMessage(Message::UploadTo(recv_file_id, recv_upload_url))) = rx.recv().await {
                 //Validate that the url contains the upload_id somewhere
                 let requests: HashMap<RequestId, Sender<Result<Bytes, PayloadError>>> =
                     task_state.requests.read().await.clone();
@@ -271,7 +271,7 @@ mod test {
 
         let task_state = state.clone();
         let handle = tokio::task::spawn(async move {
-            if let Some(Message::MetadataReq(recv_file_id, recv_upload_id)) = rx.recv().await {
+            if let Some(InternalComm::SendMessage(Message::MetadataReq(recv_file_id, recv_upload_id))) = rx.recv().await {
                 //Validate that the url contains the upload_id somewhere
                 let requests: HashMap<RequestId, Sender<Result<Bytes, PayloadError>>> =
                     task_state.requests.read().await.clone();

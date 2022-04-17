@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ws-com-framework = { git="https://github.com/file-share-platform/ws-com-framework" }
+ws-com-framework = { git="https://github.com/file-share-platform/ws-com-framework", rev="d7dcd58cd2e445e2a344a1bbbdd089a5b9ee585f" }
 sha2 = "0.10.2"
 
 async-trait = "0.1.53"

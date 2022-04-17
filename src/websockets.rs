@@ -12,10 +12,12 @@ use crate::{
     ServerId, State,
 };
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum InternalComm {
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum InternalComm {
     Authenticated,
     ShutDownComplete,
+    SendMessage(Message),
+    CloseConnection,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -36,10 +38,6 @@ pub struct WsHandler<T>
 where
     T: DbBackend + 'static + Unpin + Send + Sync + Clone,
 {
-    /// messages sent here will be sent out to the connected agent
-    tx: mpsc::Sender<Message>,
-    /// a queue of messages to be sent to the connected agent
-    rx: mpsc::Receiver<Message>,
     /// the send end of an internal message queue for various communications
     internal_tx: mpsc::Sender<InternalComm>,
     /// the receive end of an internal message queue for various communications
@@ -65,8 +63,7 @@ where
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        self.listen_for_response(ctx);
-        self.handle_internal_comms(ctx);
+        self.internal_comms(ctx);
         self.ping_pong(ctx);
     }
 
@@ -102,12 +99,12 @@ impl<T> WsHandler<T>
 where
     T: DbBackend + 'static + Unpin + Send + Sync + Clone,
 {
-    fn listen_for_response(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
+    fn internal_comms(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
+        // Note that we are only draining one action from the queue each time this function runs
+        // this means a connected agent will get at *most* 20 actions per second.
+        // It could be an interesting activity to dynamically drain more elements from the queue if many
+        // are waiting. Could track number of elements in queue with a simple counter.
         ctx.run_interval(Duration::from_millis(50), |act, c| {
-            if !matches!(act.ws_state, WsState::Running) {
-                return; //In the process of asynchronously shutting down
-            }
-
             macro_rules! close_connection {
                 () => {{
                     c.close(None);
@@ -115,43 +112,28 @@ where
                 }};
             }
 
-            macro_rules! send_msg {
-                ($msg:expr) => {{
-                    let msg = $msg;
+            if matches!(act.ws_state, WsState::Stopped) {
+                return; //Prevent handling of internal messages when stopped
+            }
+
+            match act.internal_rx.try_recv() {
+                Ok(InternalComm::Authenticated) => act.authentication = Authentication::Authenticated,
+                Ok(InternalComm::CloseConnection) => close_connection!(),
+                Ok(InternalComm::ShutDownComplete) => act.ws_state = WsState::Stopped,
+                Ok(InternalComm::SendMessage(msg)) => {
                     trace!("Sending message: {:?}", msg);
                     if let Ok(data) = TryInto::<Vec<u8>>::try_into(msg) {
                         c.write_raw(ws::Message::Binary(actix_web::web::Bytes::from(data)));
                     } else {
                         error!("failed to send message down websocket");
                     }
-                }};
-            }
-
-            match act.rx.try_recv() {
-                Ok(Message::Close) => close_connection!(),
-                Ok(msg) => send_msg!(msg),
-                Err(mpsc::error::TryRecvError::Empty) => {}
-                Err(mpsc::error::TryRecvError::Disconnected) => close_connection!(),
-            }
-        });
-    }
-
-    fn handle_internal_comms(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
-        ctx.run_interval(Duration::from_millis(1000), |act, _c| {
-            if matches!(act.ws_state, WsState::Stopped) {
-                return; //Prevent handling of internal messages when stopped
-            }
-
-            match act.internal_rx.try_recv() {
-                Ok(InternalComm::Authenticated) => {
-                    act.authentication = Authentication::Authenticated
                 }
-                Ok(InternalComm::ShutDownComplete) => act.ws_state = WsState::Stopped,
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    panic!("internal communication pipeline should never stop")
+                    error!("internal communication pipeline should never stop");
+                    close_connection!();
                 }
-            };
+            }
         });
     }
 
@@ -168,7 +150,7 @@ where
     T: DbBackend + 'static + Unpin + Send + Sync + Clone,
 {
     //XXX: include some way to identify which agent this is handling
-    //XXX: should this be run in a ctx.run_interval?
+    //XXX: should this be run in an async context to avoid blocking?
     fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         macro_rules! close_unexpected_message {
             ($m:expr) => {{
@@ -237,7 +219,7 @@ where
                         Message::AuthRes(public_id, passcode) => {
                             let database = self.database.clone();
                             let state = self.state.clone();
-                            let tx = self.tx.clone();
+                            let tx = self.internal_tx.clone();
                             let i_tx = self.internal_tx.clone();
                             let fut = async move {
                                 match database.validate_server(&public_id, &passcode).await {
@@ -250,7 +232,7 @@ where
                                         match unauth_server {
                                             Some(s) => {
                                                 state.servers.write().await.insert(public_id, s);
-                                                if let Err(e) = tx.send(Message::Ok).await {
+                                                if let Err(e) = tx.send(InternalComm::SendMessage(Message::Ok)).await {
                                                     error!("unable to send OK auth response to peer {:?}", e);
                                                 }
                                                 if let Err(e) = i_tx.send(InternalComm::Authenticated).await {
@@ -262,15 +244,15 @@ where
                                     }
                                     Ok(false) => {
                                         if let Err(e) = tx
-                                            .send(Message::Error(
+                                            .send(InternalComm::SendMessage(Message::Error(
                                                 Some(String::from("failed authentication")),
                                                 ErrorKind::InvalidSession,
-                                            ))
+                                            )))
                                             .await
                                         {
                                             error!("unable to send auth failure req to peer due to error {:?}", e);
                                         }
-                                        if let Err(e) = tx.send(Message::Close).await {
+                                        if let Err(e) = tx.send(InternalComm::CloseConnection).await {
                                             error!("unable to close connection to peer {:?}", e);
                                         }
                                     }
@@ -283,7 +265,7 @@ where
                         _ => {
                             //Recieved unexpected message from agent
                             close_unexpected_message!(m);
-                            self.finished(ctx);
+                            self.finished(ctx); //XXX: shoudl we send InternalComm::CloseConnection instead?
                         }
                     }
                 }
@@ -330,8 +312,8 @@ where
 {
     let server_id = path.into_inner();
 
-    let (tx, rx) = mpsc::channel(10);
-    tx.send(Message::AuthReq(server_id)).await.unwrap();
+    let (tx, rx) = mpsc::channel(100);
+    tx.send(InternalComm::SendMessage(Message::AuthReq(server_id))).await.unwrap();
 
     if state.servers.read().await.contains_key(&server_id) {
         return Ok(
@@ -339,23 +321,18 @@ where
         );
     }
 
-    let mut servers = state.unauthenticated_servers.write().await;
-    servers.insert(server_id, tx.clone());
-
-    let (i_tx, i_rx) = mpsc::channel(10);
+    state.unauthenticated_servers.write().await.insert(server_id, tx.clone());
 
     ws::start(
         WsHandler {
-            tx,
-            rx,
             state: state.clone(),
             database: database.clone(),
             id: server_id,
             ws_state: WsState::Running,
             authentication: Authentication::Unauthenticated,
-            internal_tx: i_tx,
-            internal_rx: i_rx,
             pinger: 0,
+            internal_tx: tx,
+            internal_rx: rx,
         },
         &req,
         stream,

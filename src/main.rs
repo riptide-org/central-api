@@ -35,17 +35,17 @@ use db::{Database, DbBackend};
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, RwLock};
-use ws_com_framework::{Message, PublicId as ServerId};
-
+use ws_com_framework::PublicId as ServerId;
+use websockets::InternalComm as WsInternalComm;
 type RequestId = u64;
 
 /// State holds information about all current active connections and nodes
 #[derive(Debug)]
 pub struct State {
     /// Websockets that are connected, but have not yet completed authentication
-    unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<Message>>>,
+    unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
     /// Connected websockets that are valid, and have responded to a ping within the last X seconds
-    servers: RwLock<HashMap<ServerId, mpsc::Sender<Message>>>,
+    servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
     /// Actively waiting requests that need an agent to respond - that also haven't timed out yet
     requests: RwLock<HashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,
     /// The base URL of this server
