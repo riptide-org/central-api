@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use actix::{Actor, AsyncContext, StreamHandler};
-use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{get, web::{self, Bytes}, HttpRequest, HttpResponse, Responder, error::PayloadError};
 use actix_web_actors::ws::{self, CloseCode, CloseReason};
 use log::{debug, error, info, trace};
 use tokio::sync::mpsc;
@@ -12,12 +12,14 @@ use crate::{
     ServerId, State,
 };
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq)]
 pub enum InternalComm {
     Authenticated,
     ShutDownComplete,
     SendMessage(Message),
     CloseConnection,
+    #[cfg(test)]
+    RecieveMessage(actix_web_actors::ws::Message),
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -133,6 +135,10 @@ where
                     error!("internal communication pipeline should never stop");
                     close_connection!();
                 }
+                #[cfg(test)]
+                Ok(InternalComm::RecieveMessage(msg)) => {
+                    act.handle(Ok(msg), c);
+                }
             }
         });
     }
@@ -147,7 +153,7 @@ where
 
 impl<T> StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsHandler<T>
 where
-    T: DbBackend + 'static + Unpin + Send + Sync + Clone,
+    T: DbBackend + Unpin + Send + Sync + Clone,
 {
     //XXX: include some way to identify which agent this is handling
     //XXX: should this be run in an async context to avoid blocking?
@@ -300,18 +306,17 @@ where
     }
 }
 
-pub async fn __websocket<E>(
+pub async fn __websocket<E, T>(
     req: HttpRequest,
-    stream: web::Payload,
+    stream: T,
     state: web::Data<State>,
     database: E,
-    path: web::Path<ServerId>,
+    server_id: ServerId,
 ) -> Result<HttpResponse, actix_web::Error>
 where
     E: DbBackend + 'static + Unpin + Send + Sync + Clone,
+    T: futures::Stream<Item = Result<Bytes, PayloadError>> + 'static,
 {
-    let server_id = path.into_inner();
-
     let (tx, rx) = mpsc::channel(100);
     tx.send(InternalComm::SendMessage(Message::AuthReq(server_id))).await.unwrap();
 
@@ -347,11 +352,86 @@ pub async fn websocket(
     database: web::Data<Database>,
     path: web::Path<ServerId>,
 ) -> impl Responder {
-    __websocket(req, stream, state, database, path).await
+    let server_id = path.into_inner();
+    __websocket(req, stream, state, database, server_id).await
 }
 
 #[cfg(test)]
 #[cfg(not(tarpaulin_include))]
 mod test {
+    use std::{sync::Arc, collections::HashMap, task::Poll};
 
+    use actix_web::{web::{Data, Bytes}, error::PayloadError, http::StatusCode, body::MessageBody, App};
+    use futures::{Stream, future};
+    use tokio::{sync::{RwLock, mpsc::{unbounded_channel, UnboundedReceiver}, oneshot}, pin};
+
+    use super::__websocket;
+    use crate::{db::{tests::MockDb, DbBackend, Database}, State, websockets::InternalComm};
+
+    struct MockStreamer {
+        rx: UnboundedReceiver<Vec<u8>>,
+    }
+
+    impl Stream for MockStreamer {
+        type Item = Result<Bytes, PayloadError>;
+        fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
+            match self.rx.poll_recv(cx) {
+                Poll::Ready(Some(x)) => Poll::Ready(Some(Ok(Bytes::from_iter(x)))),
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+
+    /// Test the websockets responses to various inputs
+    /// not working presently: unable to send messages to platform
+    // #[ignore]
+    #[actix_web::test]
+    #[ignore]
+    async fn test_websocket_auth() {
+        let state = Data::new(State {
+            unauthenticated_servers: Default::default(),
+            servers: Default::default(),
+            requests: RwLock::new(HashMap::new()),
+            base_url: "https://localhost:8080".into(),
+        });
+
+        let db = Data::new(Database::new().await.expect("a valid database connection"));
+
+        let app = actix_web::test::init_service(
+            App::new()
+                .app_data(db.clone())
+                .app_data(state.clone())
+                .service(super::websocket)
+        ).await;
+
+        let req = actix_web::test::TestRequest::get()
+            .uri("/ws/34")
+            .insert_header(("Connection", "Upgrade"))
+            .insert_header(("Upgrade", "websocket"))
+            .insert_header(("Sec-WebSocket-Version", "13"))
+            .insert_header(("Sec-Websocket-Key", "hmjyeETwfQiUbj+FID41xg=="))
+            .to_request();
+
+        let resp = actix_web::test::call_service(&app, req).await;
+
+        let body = resp.into_body();
+        pin!(body);
+
+        //XXX: we may need a timeout here?
+        let res = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await.unwrap().unwrap();
+
+        let test_bytes: Vec<u8> = b"test".to_vec();
+
+        let servers = state.unauthenticated_servers.read().await;
+        let server = servers.get(&34).unwrap();
+        server.send(InternalComm::RecieveMessage(actix_web_actors::ws::Message::Ping(Bytes::copy_from_slice(b"test")))).await.unwrap();
+
+        let res = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await.unwrap().unwrap();
+
+        println!("{:?}", res.as_ref());
+        println!("{:?}", test_bytes);
+
+        panic!("oop");
+    }
 }
