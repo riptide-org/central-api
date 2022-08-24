@@ -12,7 +12,10 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install dependencies
-      run: sudo apt-get install -y libsqlite3-dev protobuf-compiler
+      run: wget https://github.com/protocolbuffers/protobuf/releases/download/v3.20.0/protoc-3.20.0-linux-x86_64.zip &&
+        unzip protoc-3.20.0-linux-x86_64.zip &&
+        sudo cp -r include/* /usr/local/include &&
+        sudo cp bin/protoc /usr/bin/
     - name: Build
       run: cargo build --verbose
     - name: Run tests
