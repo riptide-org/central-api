@@ -8,7 +8,7 @@ use actix_web::web::{self, Data};
 use async_trait::async_trait;
 use diesel::{
     r2d2::{ConnectionManager, Pool},
-    ExpressionMethods, QueryDsl, RunQueryDsl, SqliteConnection,
+    ExpressionMethods, QueryDsl, RunQueryDsl, SqliteConnection
 };
 use log::trace;
 use sha2::{Digest, Sha256};
@@ -52,12 +52,12 @@ impl Database {
     pub async fn init(&self) -> Result<(), DbBackendError> {
         let init_sql: &str = include_str!("../migrations/2022-04-10-095111_create_agents/up.sql");
 
-        let conn = self
+        let mut conn = self
             .0
             .get()
             .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
 
-        web::block(move || diesel::sql_query(init_sql).execute(&conn))
+        web::block(move || diesel::sql_query(init_sql).execute(&mut conn))
             .await
             .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
             .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
@@ -107,24 +107,26 @@ impl DbBackend for Database {
             secure_key: hasher.finalize().to_vec(), //hash passcode
         };
 
-        let conn = self
+        let mut conn = self
             .0
             .get()
             .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
 
-        //TODO: check if exists already and save that passcode to return as Some(Passcode) at end
-
         //run in a blocking context
-        web::block(move || {
+        let existing_agent: Agent = web::block(move || {
+            // upsert the agent, replacing passcode if it exists
             diesel::insert_into(agents)
                 .values(&new_agent)
-                .execute(&conn)
+                .on_conflict(public_id)
+                .do_update()
+                .set(secure_key.eq(&new_agent.secure_key))
+                .get_result(&mut conn)
         })
         .await
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
-        Ok(None)
+        Ok(Some(existing_agent.secure_key))
     }
 
     async fn validate_server(
@@ -134,7 +136,7 @@ impl DbBackend for Database {
     ) -> Result<bool, DbBackendError> {
         use crate::schema::agents::dsl::*;
 
-        let conn = self
+        let mut conn = self
             .0
             .get()
             .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
@@ -142,7 +144,7 @@ impl DbBackend for Database {
         let users = web::block(move || {
             agents
                 .filter(public_id.eq(server_id))
-                .load::<Agent>(&conn)
+                .load::<Agent>(&mut conn)
         })
         .await
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
@@ -162,7 +164,7 @@ impl DbBackend for Database {
     async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
         use crate::schema::agents::dsl::*;
 
-        let conn = self
+        let mut conn = self
             .0
             .get()
             .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
@@ -172,7 +174,7 @@ impl DbBackend for Database {
             agents
                 .filter(public_id.eq(server_id))
                 .count()
-                .get_result(&conn)
+                .get_result(&mut conn)
         })
         .await
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
@@ -261,7 +263,6 @@ impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
     }
 }
 
-//XXX: this could be refactored to export internal types? Would be better for error handling
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DbBackendError {
     AlreadyExist,
@@ -339,7 +340,6 @@ pub mod tests {
         }
 
         async fn close(self) -> Result<(), DbBackendError> {
-            drop(self); //XXX: check how RwLocks are dropped, could be problematic?
             Ok(())
         }
     }

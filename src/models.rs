@@ -1,3 +1,5 @@
+#![allow(clippy::extra_unused_lifetimes, unused_qualifications)]
+
 use crate::schema::*;
 
 #[derive(Debug, Insertable)]

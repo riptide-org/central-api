@@ -89,7 +89,6 @@ mod test {
         }
     }
 
-    //XXX: on failure remove the db file (e.g. ON DROP)
     #[tokio::test]
     async fn test_registering_api_real_db() {
         const CONVERSION_COUNT: u64 = 100;

@@ -1,11 +1,11 @@
 use actix_web::{
     get,
-    web::{Data, Path},
+    web::{Data, Path, Bytes},
     HttpRequest, HttpResponse,
 };
 use log::trace;
 use rand::Rng;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time};
 use ws_com_framework::{FileId, Message};
 
 use crate::{ServerId, State, websockets::InternalComm};
@@ -97,8 +97,15 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
 
         let payload = async_stream::stream! {
             //XXX: enable timeouts
-            while let Some(v) = rx.recv().await {
-                yield v;
+            tokio::select! {
+                v = rx.recv() => {
+                    if let Some(x) = v {
+                        yield x;
+                    }
+                },
+                _ = time::sleep(tokio::time::Duration::from_secs(5)) => {
+                    yield Ok(Bytes::from_static(b"download failed"))
+                }
             }
         };
 

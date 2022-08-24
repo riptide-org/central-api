@@ -7,22 +7,22 @@ edition = "2021"
 ws-com-framework = { git="https://github.com/file-share-platform/ws-com-framework", rev="d7dcd58cd2e445e2a344a1bbbdd089a5b9ee585f" }
 sha2 = "0.10.2"
 
-async-trait = "0.1.53"
+async-trait = "0.1.57"
 
 actix = "0.13.0"
 actix-web = { version = "4", features = ["openssl"] }
 actix-web-actors = "4"
 openssl = { version = "0.10", features = ["v110"] }
 tokio = { version = "1", features = ["full"] }
-log = "0.4.14"
-futures = "0.3.21"
-async-stream = "0.3.2"
+log = "0.4.17"
+futures = "0.3.23"
+async-stream = "0.3.3"
 
 pretty_env_logger = "0.4.0"
 
 rand = "0.8.5"
-diesel = { version = "1.4.8", features = ["r2d2", "sqlite"] }
+diesel = { git="https://github.com/diesel-rs/diesel.git", rev="596cdd21cc4aa4cefeccdcb3988c14f9a01ed6de", features = ["r2d2", "sqlite", "returning_clauses_for_sqlite_3_35"] }
 
 [dev-dependencies]
-serde = {version = "1.0.136", features = ["derive"]}
-serde_json = "1.0.59"
+serde = {version = "1.0.144", features = ["derive"]}
+serde_json = "1.0.85"
