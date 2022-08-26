@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use actix::{Actor, AsyncContext, StreamHandler};
-use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{get, web::{self, Bytes}, HttpRequest, HttpResponse, Responder, error::PayloadError};
 use actix_web_actors::ws::{self, CloseCode, CloseReason};
 use log::{debug, error, info, trace};
 use tokio::sync::mpsc;
@@ -12,12 +12,16 @@ use crate::{
     ServerId, State,
 };
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Debug, PartialEq)]
 pub enum InternalComm {
     Authenticated,
     ShutDownComplete,
     SendMessage(Message),
     CloseConnection,
+    #[allow(dead_code)]
+    #[cfg(test)]
+    RecieveMessage(actix_web_actors::ws::Message),
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -133,6 +137,10 @@ where
                     error!("internal communication pipeline should never stop");
                     close_connection!();
                 }
+                #[cfg(test)]
+                Ok(InternalComm::RecieveMessage(msg)) => {
+                    act.handle(Ok(msg), c);
+                }
             }
         });
     }
@@ -147,10 +155,8 @@ where
 
 impl<T> StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsHandler<T>
 where
-    T: DbBackend + 'static + Unpin + Send + Sync + Clone,
+    T: DbBackend + Unpin + Send + Sync + Clone,
 {
-    //XXX: include some way to identify which agent this is handling
-    //XXX: should this be run in an async context to avoid blocking?
     fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         macro_rules! close_unexpected_message {
             ($m:expr) => {{
@@ -263,9 +269,9 @@ where
                             ctx.spawn(fut);
                         }
                         _ => {
-                            //Recieved unexpected message from agent
+                            //Received unexpected message from agent
                             close_unexpected_message!(m);
-                            self.finished(ctx); //XXX: shoudl we send InternalComm::CloseConnection instead?
+                            self.finished(ctx);
                         }
                     }
                 }
@@ -275,10 +281,10 @@ where
                 ctx.write_raw(ws::Message::Pong(msg));
             }
             Ok(ws::Message::Pong(pong)) => {
-                trace!("recived pong message from peer");
+                trace!("received pong message from peer");
                 if pong.as_ref() != (self.pinger - 1).to_be_bytes() {
                     //pong failed
-                    error!("peer send pong resposne too slowly");
+                    error!("peer send pong response too slowly");
                     self.finished(ctx);
                 }
             }
@@ -300,18 +306,17 @@ where
     }
 }
 
-pub async fn __websocket<E>(
+pub async fn __websocket<E, T>(
     req: HttpRequest,
-    stream: web::Payload,
+    stream: T,
     state: web::Data<State>,
     database: E,
-    path: web::Path<ServerId>,
+    server_id: ServerId,
 ) -> Result<HttpResponse, actix_web::Error>
 where
     E: DbBackend + 'static + Unpin + Send + Sync + Clone,
+    T: futures::Stream<Item = Result<Bytes, PayloadError>> + 'static,
 {
-    let server_id = path.into_inner();
-
     let (tx, rx) = mpsc::channel(100);
     tx.send(InternalComm::SendMessage(Message::AuthReq(server_id))).await.unwrap();
 
@@ -347,11 +352,328 @@ pub async fn websocket(
     database: web::Data<Database>,
     path: web::Path<ServerId>,
 ) -> impl Responder {
-    __websocket(req, stream, state, database, path).await
+    let server_id = path.into_inner();
+    __websocket(req, stream, state, database, server_id).await
 }
 
 #[cfg(test)]
 #[cfg(not(tarpaulin_include))]
 mod test {
+    use std::{sync::Once, collections::HashMap, task::Poll, thread::JoinHandle};
 
+    use actix_web::{web::{Data, Bytes}, error::PayloadError, App, HttpServer, middleware::Logger};
+    use futures::Stream;
+    use log::{error, info};
+    use serde::{Serialize, Deserialize};
+    use tokio::{sync::{RwLock, mpsc::UnboundedReceiver, oneshot}};
+    use tungstenite::Message;
+    use ws_com_framework::error::ErrorKind;
+
+    use crate::{db::{DbBackend, Database}, State};
+
+    static INIT: Once = Once::new();
+
+    fn init_logger() {
+        INIT.call_once(|| {
+            pretty_env_logger::init();
+        });
+    }
+
+    #[derive(Clone, Serialize, Deserialize, Debug)]
+    struct AuthToken {
+        pub public_id: u64,
+        pub passcode: String,
+    }
+
+    struct MockStreamer {
+        rx: UnboundedReceiver<Vec<u8>>,
+    }
+
+    impl Stream for MockStreamer {
+        type Item = Result<Bytes, PayloadError>;
+        fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
+            match self.rx.poll_recv(cx) {
+                Poll::Ready(Some(x)) => Poll::Ready(Some(Ok(Bytes::from_iter(x)))),
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+
+    fn find_open_port() -> std::net::TcpListener {
+        for port in 1025..65535 {
+            if let Ok(l) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+                return l
+            }
+        }
+       panic!("no open ports found");
+    }
+
+    async fn create_server(database_url: String, port: std::net::TcpListener) -> (Data<Database>, Data<State>,JoinHandle<()>, oneshot::Sender<()>) {
+        let state = Data::new(State {
+            unauthenticated_servers: Default::default(),
+            servers: Default::default(),
+            requests: RwLock::new(HashMap::new()),
+            base_url: "https://localhost:8080".into(),
+        });
+
+        let db = Data::new(Database::new(database_url).await.expect("a valid database connection"));
+
+        let server_db = db.clone();
+        let server_state = state.clone();
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let mut server = HttpServer::new(move || {
+                App::new()
+                    .app_data(server_db.clone())
+                    .app_data(server_state.clone())
+                    .service(super::websocket)
+                    .service(crate::auth::register)
+                    .service(crate::download::metadata)
+                    .service(crate::download::download)
+                    .service(crate::upload::upload)
+                    .wrap(Logger::default())
+
+            })
+            .listen(port)
+            .unwrap()
+            .run();
+            rt.block_on(async move {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut rx => {
+                            break;
+                        }
+                        _ = &mut server => {
+                            break;
+                        }
+                    }
+                }
+            });
+        });
+
+        (db, state, handle, tx)
+    }
+
+    /// Test the websockets responses to various inputs
+    #[actix_web::test]
+    async fn test_websocket_auth() {
+        init_logger();
+        let database_url = String::from("./test-db-test-websocket-auth.db");
+        let port = find_open_port();
+        let address = format!("127.0.0.1:{}", port.local_addr().unwrap().port());
+        let (db, state, handle, tx) = create_server(database_url.clone(), port).await;
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // make POST request to http endpoint at /register to get a token
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/register", address))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success());
+        let token: AuthToken = res.json().await.unwrap();
+
+        //validate that token is in the database
+        assert!(db.contains_entry(&token.public_id).await.unwrap());
+
+        // create a websocket connection to the server
+        let (mut socket, _) = tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
+
+        let msg = socket.read_message().unwrap();
+        let expected_bytes: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id).try_into().unwrap();
+        assert_eq!(msg.into_data(), expected_bytes);
+
+        // check that the state contains us as an entry in unauthenticated_servers
+        assert!(state.unauthenticated_servers.read().await.contains_key(&token.public_id));
+
+        // send auth message to the server
+        socket.write_message(Message::Binary(ws_com_framework::Message::AuthRes(token.public_id, token.passcode.into()).try_into().unwrap())).unwrap();
+
+        // expect OK response
+        let msg = socket.read_message().unwrap();
+        let expected_bytes: Vec<u8> = ws_com_framework::Message::Ok.try_into().unwrap();
+        assert_eq!(msg.into_data(), expected_bytes);
+
+        // check that the state no longer contains us as an entry in unauthenticated_servers
+        assert!(!state.unauthenticated_servers.read().await.contains_key(&token.public_id));
+
+        // check that the state contains us as an entry in servers
+        assert!(state.servers.read().await.contains_key(&token.public_id));
+
+        // test ping/pong
+        socket.write_message(Message::Ping(vec![1, 2, 3])).unwrap();
+        let msg = socket.read_message().unwrap();
+        assert_eq!(msg, Message::Pong(vec![1, 2, 3]));
+
+        // test close
+        socket.write_message(Message::Close(None)).unwrap();
+
+        //kill the std thread without waiting
+        if let Err(e) = tx.send(()) {
+            error!("{:?}", e);
+        }
+        handle.join().unwrap();
+
+        // remove database file
+        std::fs::remove_file(database_url).unwrap();
+    }
+
+    #[actix_web::test]
+    async fn test_websocket_auth_failure() {
+        init_logger();
+        let database_url = String::from("./test-db-test-websocket-auth-failure.db");
+        let port = find_open_port();
+        let address = format!("127.0.0.1:{}", port.local_addr().unwrap().port());
+        let (_, _, handle, tx) = create_server(database_url.clone(), port).await;
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // make POST request to http endpoint at /register to get a token
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/register", address))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success());
+
+        let token: AuthToken = res.json().await.unwrap();
+
+        // create a websocket connection to the server
+        let (mut socket, _) = tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
+
+        let msg = socket.read_message().unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id).try_into().unwrap();
+        assert_eq!(msg.into_data(), expected_data);
+
+        // send auth message with invalid passcode
+        socket.write_message(Message::Binary(ws_com_framework::Message::AuthRes(token.public_id, "invalid".into()).try_into().unwrap())).unwrap();
+
+        //validate we got error response
+        let msg = socket.read_message().unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::Error(Some("failed authentication".into()), ErrorKind::InvalidSession).try_into().unwrap();
+        assert_eq!(msg.into_data(), expected_data);
+
+        // validate that the socket was closed
+        let msg = socket.read_message().unwrap();
+        assert_eq!(msg, Message::Close(None));
+
+        //kill the std thread without waiting
+        if let Err(e) = tx.send(()) {
+            error!("{:?}", e);
+        }
+        handle.join().unwrap();
+
+        // remove database file
+        std::fs::remove_file(database_url).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_full_file_transmission() {
+        init_logger();
+        let database_url = String::from("./test-db-test-full-file-transmission.db");
+        let port = find_open_port();
+        let address = format!("127.0.0.1:{}", port.local_addr().unwrap().port());
+        let (_, _, handle, tx) = create_server(database_url.clone(), port).await;
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // make POST request to http endpoint at /register to get a token
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/register", address))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success());
+
+        let token: AuthToken = res.json().await.unwrap();
+
+        // create a websocket connection to the server
+        let (mut socket, _) = tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
+
+        let msg = socket.read_message().unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id).try_into().unwrap();
+        assert_eq!(msg.into_data(), expected_data);
+
+        // send auth message to the server
+        socket.write_message(Message::Binary(ws_com_framework::Message::AuthRes(token.public_id, token.passcode.into()).try_into().unwrap())).unwrap();
+
+        // expect OK response
+        let msg = socket.read_message().unwrap();
+        let expected_bytes: Vec<u8> = ws_com_framework::Message::Ok.try_into().unwrap();
+        assert_eq!(msg.into_data(), expected_bytes);
+
+        // reuse client to send file request to server
+        let get_url = format!("http://{}/download/{}/{}", address, token.public_id, 24);
+        let res = tokio::task::spawn(async move {
+            let res = client
+                .get(get_url)
+                .send()
+                .await
+                .unwrap();
+
+            info!("got response {:?}", res);
+            assert!(res.status().is_success());
+
+            res
+        });
+
+        // read messages until we get a binary message type
+        let mut msg: Message = socket.read_message().unwrap();
+        while !matches!(msg, Message::Binary(_)) {
+            info!("got message: {:?}", msg);
+            (msg, socket) = tokio::task::spawn_blocking(move || {
+                let msg = socket.read_message().unwrap();
+                (msg, socket)
+            }).await.unwrap();
+        }
+
+        let data: ws_com_framework::Message = msg.into_data().try_into().unwrap();
+        match data {
+            ws_com_framework::Message::UploadTo(file_id, upload_url) => {
+                assert_eq!(file_id, 24);
+
+                //upload file to server
+                let upload_url = upload_url.replace("localhost:8080", &address).replace("https", "http");
+
+                info!("attempting to upload to {}", upload_url);
+
+                let client = reqwest::Client::new();
+                let res = client
+                    .post(upload_url)
+                    .body("hello, world")
+                    .send()
+                    .await
+                    .unwrap();
+
+                assert!(res.status().is_success());
+            }
+            m => panic!("expected file req message {:?}", m),
+        }
+
+        // validate that the file was received
+        let got_res = res.await.unwrap();
+        assert!(got_res.status().is_success());
+
+        let got_res = got_res.text().await.unwrap();
+        assert_eq!(got_res, "hello, world");
+
+        //kill the std thread without waiting
+        if let Err(e) = tx.send(()) {
+            error!("{:?}", e);
+        }
+        handle.join().unwrap();
+
+        // remove database file
+        std::fs::remove_file(database_url).unwrap();
+    }
 }
