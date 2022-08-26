@@ -3,12 +3,15 @@ use std::{
     sync::Arc,
 };
 
-use crate::{models::{*, Agent}, ServerId};
+use crate::{
+    models::{Agent, *},
+    ServerId,
+};
 use actix_web::web::{self, Data};
 use async_trait::async_trait;
 use diesel::{
     r2d2::{ConnectionManager, Pool},
-    ExpressionMethods, QueryDsl, RunQueryDsl, SqliteConnection, OptionalExtension
+    ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, SqliteConnection,
 };
 use log::trace;
 use sha2::{Digest, Sha256};
@@ -132,7 +135,9 @@ impl DbBackend for Database {
         .await
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
-        Ok(existing_agent.map_err(|e| DbBackendError::QueryFailed(e.to_string()))?.map(|a| a.secure_key))
+        Ok(existing_agent
+            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+            .map(|a| a.secure_key))
     }
 
     async fn validate_server(
