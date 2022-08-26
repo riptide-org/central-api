@@ -8,7 +8,7 @@ use actix_web::web::{self, Data};
 use async_trait::async_trait;
 use diesel::{
     r2d2::{ConnectionManager, Pool},
-    ExpressionMethods, QueryDsl, RunQueryDsl, SqliteConnection
+    ExpressionMethods, QueryDsl, RunQueryDsl, SqliteConnection, OptionalExtension
 };
 use log::trace;
 use sha2::{Digest, Sha256};
@@ -19,7 +19,7 @@ type DbPool = Pool<ConnectionManager<SqliteConnection>>;
 #[async_trait]
 pub trait DbBackend {
     /// `new` will attempt
-    async fn new() -> Result<Self, DbBackendError>
+    async fn new(database_url: String) -> Result<Self, DbBackendError>
     where
         Self: Sized;
 
@@ -81,8 +81,7 @@ impl DerefMut for Database {
 
 #[async_trait]
 impl DbBackend for Database {
-    async fn new() -> Result<Self, DbBackendError> {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    async fn new(database_url: String) -> Result<Self, DbBackendError> {
         let db = Self(
             Pool::builder()
                 .build(ConnectionManager::<SqliteConnection>::new(&database_url))
@@ -113,20 +112,27 @@ impl DbBackend for Database {
             .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
 
         //run in a blocking context
-        let existing_agent: Agent = web::block(move || {
+        let existing_agent: Result<Option<Agent>, diesel::result::Error> = web::block(move || {
+            //attempt to get the existing agent if it exists
+            let ex: Option<Agent> = agents
+                .filter(public_id.eq(new_agent.public_id))
+                .first::<Agent>(&mut conn)
+                .optional()?;
+
             // upsert the agent, replacing passcode if it exists
             diesel::insert_into(agents)
                 .values(&new_agent)
                 .on_conflict(public_id)
                 .do_update()
                 .set(secure_key.eq(&new_agent.secure_key))
-                .get_result(&mut conn)
+                .execute(&mut conn)?;
+
+            Ok(ex)
         })
         .await
-        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
         .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
-        Ok(Some(existing_agent.secure_key))
+        Ok(existing_agent.map_err(|e| DbBackendError::QueryFailed(e.to_string()))?.map(|a| a.secure_key))
     }
 
     async fn validate_server(
@@ -191,8 +197,8 @@ impl DbBackend for Database {
 
 #[async_trait]
 impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
-    async fn new() -> Result<Data<T>, DbBackendError> {
-        Ok(Data::new(T::new().await?))
+    async fn new(database_url: String) -> Result<Data<T>, DbBackendError> {
+        Ok(Data::new(T::new(database_url).await?))
     }
 
     async fn save_entry(
@@ -228,8 +234,8 @@ impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
 
 #[async_trait]
 impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
-    async fn new() -> Result<Arc<T>, DbBackendError> {
-        Ok(Arc::new(T::new().await?))
+    async fn new(database_url: String) -> Result<Arc<T>, DbBackendError> {
+        Ok(Arc::new(T::new(database_url).await?))
     }
 
     async fn save_entry(
@@ -307,7 +313,7 @@ pub mod tests {
 
     #[async_trait]
     impl DbBackend for MockDb {
-        async fn new() -> Result<Self, DbBackendError> {
+        async fn new(_: String) -> Result<Self, DbBackendError> {
             Ok(Self {
                 store: Default::default(),
             })

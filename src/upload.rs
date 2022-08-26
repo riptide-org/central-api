@@ -28,7 +28,7 @@ where
         };
     }
 
-    HttpResponse::Ok().body("succesfully uploaded")
+    HttpResponse::Ok().body("successfully uploaded")
 }
 
 /// Upload a file or metadata to a waiting client

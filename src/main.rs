@@ -10,7 +10,7 @@
     unstable_features,
     unused_import_braces,
     unused_qualifications,
-    deprecated
+    // deprecated
 )]
 
 #[macro_use]
@@ -71,9 +71,10 @@ async fn main() -> std::io::Result<()> {
         unauthenticated_servers: Default::default(),
         servers: Default::default(),
         requests: RwLock::new(HashMap::new()),
-        base_url: "https://localhost:8080".into(), //readonly //XXX: pull from env
+        base_url: "https://127.0.0.1:8080".into(), //readonly //XXX: pull from env
     });
-    let database = web::Data::new(Database::new().await.expect("a valid database connection"));
+    let database_url: String = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let database = web::Data::new(Database::new(database_url).await.expect("a valid database connection"));
 
     // begin listening for connections
     HttpServer::new(move || {

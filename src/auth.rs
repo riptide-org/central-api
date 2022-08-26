@@ -67,7 +67,7 @@ mod test {
     #[tokio::test]
     async fn test_registering_api() {
         const CONVERSION_COUNT: u64 = 100_000;
-        let db = Arc::new(MockDb::new().await.unwrap());
+        let db = Arc::new(MockDb::new(String::new()).await.unwrap());
 
         let mut keys = Vec::with_capacity(CONVERSION_COUNT as usize);
 
@@ -94,10 +94,8 @@ mod test {
         const CONVERSION_COUNT: u64 = 100;
 
         std::fs::write("./test-db.db", b"").expect("able to write to db");
-        let tmp_var = std::env::var("DATABASE_URL").unwrap_or_else(|_| String::from(""));
-        std::env::set_var("DATABASE_URL", "./test-db.db");
 
-        let db = Arc::new(Database::new().await.unwrap());
+        let db = Arc::new(Database::new(String::from("./test-db.db")).await.unwrap());
 
         db.init().await.expect("valid db");
 
@@ -108,7 +106,7 @@ mod test {
             //parse from body
             let body_bytes = i.into_body().try_into_bytes().unwrap();
             let body = std::str::from_utf8(&body_bytes).expect("valid string");
-            let id: Id = serde_json::from_str(body).expect("unabel to parse from json");
+            let id: Id = serde_json::from_str(body).expect("unable to parse from json");
             keys.push(id);
         }
 
@@ -121,7 +119,6 @@ mod test {
             assert!(result);
         }
 
-        std::env::set_var("DATABASE_URL", tmp_var);
         std::fs::remove_file("./test-db.db").expect("able to write to db");
     }
 }
