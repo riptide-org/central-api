@@ -10,7 +10,7 @@ use log::error;
 use crate::{ServerId, State};
 
 /// Internal upload handler function for a waiting client
-// Dev note: This code is split off in a seperate handler function to allow testing
+// Dev note: This code is split off in a separate handler function to allow testing
 // via implementations/mocking.
 async fn __upload<T>(mut payload: T, state: Data<State>, upload_id: ServerId) -> HttpResponse
 where

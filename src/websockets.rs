@@ -157,8 +157,6 @@ impl<T> StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsHandler<T>
 where
     T: DbBackend + Unpin + Send + Sync + Clone,
 {
-    //XXX: include some way to identify which agent this is handling
-    //XXX: should this be run in an async context to avoid blocking?
     fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         macro_rules! close_unexpected_message {
             ($m:expr) => {{
@@ -271,9 +269,9 @@ where
                             ctx.spawn(fut);
                         }
                         _ => {
-                            //Recieved unexpected message from agent
+                            //Received unexpected message from agent
                             close_unexpected_message!(m);
-                            self.finished(ctx); //XXX: should we send InternalComm::CloseConnection instead?
+                            self.finished(ctx);
                         }
                     }
                 }
