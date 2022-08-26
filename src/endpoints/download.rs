@@ -106,18 +106,24 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
         trace!("generating response payload and returning");
 
         let payload = async_stream::stream! {
-            //XXX: enable timeouts
+            // XXX: enable timeouts
+            // HACK: will this actually return all chunks? We should write a test for a very large file (5GB?)
+            // might need a loop to validate this
+            // XXX: apply the above to the 3 other locations (download/metadata/info)
             tokio::select! {
                 v = rx.recv() => {
                     if let Some(x) = v {
                         yield x;
                     }
                 },
-                _ = time::sleep(tokio::time::Duration::from_secs(5)) => {
+                _ = time::sleep(tokio::time::Duration::from_secs(5)) => { //XXX: add configurable timeout
                     yield Ok(Bytes::from_static(b"download failed"))
-                }
+                },
             }
         };
+
+        // attempt to remove the job from the requests
+        state.requests.write().await.remove(&download_id);
 
         //create a streaming response
         HttpResponse::Ok()
