@@ -1,6 +1,6 @@
 use actix_web::{
     get,
-    web::{Bytes, Data, Path, self},
+    web::{self, Bytes, Data, Path},
     HttpRequest, HttpResponse,
 };
 use log::trace;
@@ -11,9 +11,7 @@ use ws_com_framework::{FileId, Message};
 use crate::{endpoints::websockets::InternalComm, ServerId, State};
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
-    cfg
-        .service(download)
-        .service(metadata);
+    cfg.service(download).service(metadata);
 }
 
 async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpResponse {
@@ -40,10 +38,10 @@ async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
         let connected_servers = state.servers.read().await;
         let uploader_ws = connected_servers.get(&server_id).unwrap(); //Duplicate req #cd
         uploader_ws
-            .send(InternalComm::SendMessage(Message::MetadataReq(
+            .send(InternalComm::SendMessage(Message::MetadataReq {
                 file_id,
-                download_id,
-            )))
+                upload_id: download_id,
+            }))
             .await
             .unwrap();
 
@@ -75,7 +73,7 @@ async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
 /// Download a file from a client
 async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpResponse {
     let (server_id, file_id) = path;
-    trace!("download request recieved for {}, {}", server_id, file_id);
+    trace!("download request received for {}, {}", server_id, file_id);
 
     //Check server is online
     let reader = state.servers.read().await;
@@ -98,7 +96,10 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
         let connected_servers = state.servers.read().await;
         let uploader_ws = connected_servers.get(&server_id).unwrap(); //Duplicate req #cd
         uploader_ws
-            .send(InternalComm::SendMessage(Message::UploadTo(file_id, msg)))
+            .send(InternalComm::SendMessage(Message::UploadTo {
+                file_id,
+                upload_url: msg,
+            }))
             .await
             .unwrap();
 
@@ -145,7 +146,7 @@ pub async fn download(
     __download((s_id, f_id), state).await
 }
 
-#[get("/agents/{server_id}/files/{file_id}/download")]
+#[get("/agents/{server_id}/files/{file_id}/metadata")]
 pub async fn metadata(
     _: HttpRequest,
     state: Data<State>,
@@ -196,10 +197,10 @@ mod test {
 
         let task_state = state.clone();
         let handle = tokio::task::spawn(async move {
-            if let Some(InternalComm::SendMessage(Message::UploadTo(
-                recv_file_id,
-                recv_upload_url,
-            ))) = rx.recv().await
+            if let Some(InternalComm::SendMessage(Message::UploadTo {
+                file_id: recv_file_id,
+                upload_url: recv_upload_url,
+            })) = rx.recv().await
             {
                 //Validate that the url contains the upload_id somewhere
                 let requests: HashMap<RequestId, Sender<Result<Bytes, PayloadError>>> =
@@ -294,10 +295,10 @@ mod test {
 
         let task_state = state.clone();
         let handle = tokio::task::spawn(async move {
-            if let Some(InternalComm::SendMessage(Message::MetadataReq(
-                recv_file_id,
-                recv_upload_id,
-            ))) = rx.recv().await
+            if let Some(InternalComm::SendMessage(Message::MetadataReq {
+                file_id: recv_file_id,
+                upload_id: recv_upload_id,
+            })) = rx.recv().await
             {
                 //Validate that the url contains the upload_id somewhere
                 let requests: HashMap<RequestId, Sender<Result<Bytes, PayloadError>>> =

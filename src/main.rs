@@ -4,7 +4,7 @@
     missing_docs,
     missing_debug_implementations,
     missing_copy_implementations,
-    // clippy::missing_docs_in_private_items,
+    // clippy::missing_docs_in_private_items, //TODO
     trivial_casts,
     trivial_numeric_casts,
     unsafe_code,
@@ -14,11 +14,32 @@
     deprecated
 )]
 
+//TODO: if a request is present for more than 50 seconds, time it out and return an error - they shouldn't hang around in the
+// state.
+
+//TODO: remove unauthenticated agents after 5 minutes
+
+//TODO: update the last_seen timer whenever an agent authenticates.
+//TODO: force agents to reauthenticate periodically
+//TODO: expand configuration to cover all attached variables, in a separate module and pass that throughout the application
+//TODO: refactor return types into a global constant for the entire application
+//TODO: relevant to above, refactor the metadata/status response generation from websockets into download/info
+//TODO: refactor the integration tests in websockets.rs into a file in tests/integration.rs
+//TODO: add more unit tests generally speaking, and add integration tests for information endpoints, and metadata
+//TODO: add test to ensure that the agent is removed from the state when it disconnects
+//TODO: write tests to cover error states
+//TODO: refactor the openapi.oas.yml file to reduce duplication
+//TODO: update /info endpoints to return more information on individual nodes (include data on whether they're authenticated or not)
+//TODO: allow some users to optionally cache the metadata/status response for a period of time, to reduce the number of requests
+//TODO: allow some users to optionally cache the file upload itself for a period of time (e.g. 5 minutes), to reduce the number of requests
+//TODO: add size/item limits for both of the above
+//TODO: add rate limiting for all endpoints - can be implemented as middleware
+
 #[macro_use]
 extern crate diesel;
 
-mod endpoints;
 mod db;
+mod endpoints;
 mod error;
 mod models;
 #[cfg(not(tarpaulin_include))]
@@ -32,9 +53,9 @@ use actix_web::{
 };
 use db::{Database, DbBackend};
 use dotenv::dotenv;
+use endpoints::websockets::InternalComm as WsInternalComm;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, RwLock};
-use endpoints::websockets::InternalComm as WsInternalComm;
 use ws_com_framework::PublicId as ServerId;
 
 type RequestId = u64;

@@ -168,10 +168,10 @@ where
         macro_rules! close_unexpected_message {
             ($m:expr) => {{
                 debug!("got unexpected message from agent: {:?}", $m);
-                let error: Vec<u8> = Message::Error(
-                    Some(String::from("Got unknown message")),
-                    ErrorKind::Unknown,
-                )
+                let error: Vec<u8> = Message::Error {
+                    kind: ErrorKind::Unknown,
+                    reason: Some(String::from("Got unknown message")),
+                }
                 .try_into()
                 .expect("valid bytes");
                 ctx.binary(actix_web::web::Bytes::from(error));
@@ -193,10 +193,18 @@ where
                     trace!("Got binary message from peer: {m:?}");
                     match m {
                         Message::Ok => { /* Acknowledgement, do nothing */ }
-                        Message::Error(resn, kind) => {
-                            error!("Got error from agent: {:?}, {:?}", kind, resn)
+                        Message::Error { kind, reason } => {
+                            error!("Got error from agent: {:?}, {:?}", kind, reason)
                         }
-                        Message::MetadataRes(share, upload_id) => {
+                        Message::MetadataRes {
+                            file_id,
+                            exp,
+                            crt,
+                            file_size,
+                            username,
+                            file_name,
+                            upload_id,
+                        } => {
                             let state = self.state.clone();
                             let fut = async move {
                                 if let Some(s) = state.requests.write().await.remove(&upload_id) {
@@ -209,12 +217,7 @@ where
                                         \"username\": \"{}\",
                                         \"file_name\": \"{}\"
                                     }}",
-                                        share.file_id,
-                                        share.exp,
-                                        share.crt,
-                                        share.file_size,
-                                        share.username,
-                                        share.file_name
+                                        file_id, exp, crt, file_size, username, file_name
                                     );
                                     if let Err(e) = s
                                         .send(Ok(actix_web::web::Bytes::from(formatted_body)))
@@ -223,13 +226,16 @@ where
                                         error!("failed to send metadata response to peer, they may have timed out waiting: `{}`", e);
                                     };
                                 } else {
-                                    trace!("request timed out before agent sent response");
+                                    error!("request timed out before agent sent response");
                                 }
                             };
                             let fut = actix::fut::wrap_future::<_, Self>(fut);
                             ctx.spawn(fut);
                         }
-                        Message::AuthRes(public_id, passcode) => {
+                        Message::AuthRes {
+                            public_id,
+                            passcode,
+                        } => {
                             let database = self.database.clone();
                             let state = self.state.clone();
                             let tx = self.internal_tx.clone();
@@ -257,10 +263,10 @@ where
                                     }
                                     Ok(false) => {
                                         if let Err(e) = tx
-                                            .send(InternalComm::SendMessage(Message::Error(
-                                                Some(String::from("failed authentication")),
-                                                ErrorKind::InvalidSession,
-                                            )))
+                                            .send(InternalComm::SendMessage(Message::Error {
+                                                reason: Some(String::from("failed authentication")),
+                                                kind: ErrorKind::InvalidSession,
+                                            }))
                                             .await
                                         {
                                             error!("unable to send auth failure req to peer due to error {:?}", e);
@@ -272,6 +278,41 @@ where
                                     }
                                     Err(e) => error!("database error: {}", e),
                                 };
+                            };
+                            let fut = actix::fut::wrap_future::<_, Self>(fut);
+                            ctx.spawn(fut);
+                        }
+                        Message::StatusRes {
+                            public_id,
+                            ready,
+                            uptime,
+                            upload_id,
+                            message,
+                        } => {
+                            let state = self.state.clone();
+                            let fut = async move {
+                                if let Some(s) = state.requests.write().await.remove(&upload_id) {
+                                    let formatted_body = format!(
+                                        "{{
+                                        \"public_id\": \"{}\",
+                                        \"ready\": {},
+                                        \"uptime\": {},
+                                        \"message\": \"{}\"
+                                    }}",
+                                        public_id,
+                                        ready,
+                                        uptime,
+                                        message.unwrap_or_else(|| String::from(""))
+                                    );
+                                    if let Err(e) = s
+                                        .send(Ok(actix_web::web::Bytes::from(formatted_body)))
+                                        .await
+                                    {
+                                        error!("failed to send status response to peer, they may have timed out waiting: `{}`", e);
+                                    };
+                                } else {
+                                    error!("request timed out before agent sent response");
+                                }
                             };
                             let fut = actix::fut::wrap_future::<_, Self>(fut);
                             ctx.spawn(fut);
@@ -326,9 +367,11 @@ where
     T: futures::Stream<Item = Result<Bytes, PayloadError>> + 'static,
 {
     let (tx, rx) = mpsc::channel(100);
-    tx.send(InternalComm::SendMessage(Message::AuthReq(server_id)))
-        .await
-        .unwrap();
+    tx.send(InternalComm::SendMessage(Message::AuthReq {
+        public_id: server_id,
+    }))
+    .await
+    .unwrap();
 
     if state.servers.read().await.contains_key(&server_id) {
         return Ok(
@@ -383,6 +426,7 @@ mod test {
     };
     use futures::Stream;
     use log::{error, info};
+    use ntest::timeout;
     use serde::{Deserialize, Serialize};
     use tokio::sync::{mpsc::UnboundedReceiver, oneshot, RwLock};
     use tungstenite::Message;
@@ -466,11 +510,11 @@ mod test {
                 App::new()
                     .app_data(server_db.clone())
                     .app_data(server_state.clone())
-                    .service(super::websocket)
                     .service(crate::endpoints::auth::register)
-                    .service(crate::endpoints::download::metadata)
-                    .service(crate::endpoints::download::download)
                     .service(crate::endpoints::upload::upload)
+                    .service(crate::endpoints::websockets::websocket)
+                    .configure(crate::endpoints::info::configure)
+                    .configure(crate::endpoints::download::configure)
                     .wrap(Logger::default())
             })
             .listen(port)
@@ -496,6 +540,7 @@ mod test {
 
     /// Test the websockets responses to various inputs
     #[actix_web::test]
+    #[timeout(20_000)]
     async fn test_websocket_auth() {
         init_logger();
         let database_url = String::from("./test-db-test-websocket-auth.db");
@@ -524,9 +569,11 @@ mod test {
             tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
 
         let msg = socket.read_message().unwrap();
-        let expected_bytes: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id)
-            .try_into()
-            .unwrap();
+        let expected_bytes: Vec<u8> = ws_com_framework::Message::AuthReq {
+            public_id: token.public_id,
+        }
+        .try_into()
+        .unwrap();
         assert_eq!(msg.into_data(), expected_bytes);
 
         // check that the state contains us as an entry in unauthenticated_servers
@@ -539,9 +586,12 @@ mod test {
         // send auth message to the server
         socket
             .write_message(Message::Binary(
-                ws_com_framework::Message::AuthRes(token.public_id, token.passcode.into())
-                    .try_into()
-                    .unwrap(),
+                ws_com_framework::Message::AuthRes {
+                    public_id: token.public_id,
+                    passcode: token.passcode.into(),
+                }
+                .try_into()
+                .unwrap(),
             ))
             .unwrap();
 
@@ -579,6 +629,7 @@ mod test {
     }
 
     #[actix_web::test]
+    #[timeout(20_000)]
     async fn test_websocket_auth_failure() {
         init_logger();
         let database_url = String::from("./test-db-test-websocket-auth-failure.db");
@@ -605,26 +656,31 @@ mod test {
             tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
 
         let msg = socket.read_message().unwrap();
-        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id)
-            .try_into()
-            .unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq {
+            public_id: token.public_id,
+        }
+        .try_into()
+        .unwrap();
         assert_eq!(msg.into_data(), expected_data);
 
         // send auth message with invalid passcode
         socket
             .write_message(Message::Binary(
-                ws_com_framework::Message::AuthRes(token.public_id, "invalid".into())
-                    .try_into()
-                    .unwrap(),
+                ws_com_framework::Message::AuthRes {
+                    public_id: token.public_id,
+                    passcode: "invalid".into(),
+                }
+                .try_into()
+                .unwrap(),
             ))
             .unwrap();
 
         //validate we got error response
         let msg = socket.read_message().unwrap();
-        let expected_data: Vec<u8> = ws_com_framework::Message::Error(
-            Some("failed authentication".into()),
-            ErrorKind::InvalidSession,
-        )
+        let expected_data: Vec<u8> = ws_com_framework::Message::Error {
+            reason: Some("failed authentication".into()),
+            kind: ErrorKind::InvalidSession,
+        }
         .try_into()
         .unwrap();
         assert_eq!(msg.into_data(), expected_data);
@@ -644,6 +700,7 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[timeout(20_000)]
     async fn test_full_file_transmission() {
         init_logger();
         let database_url = String::from("./test-db-test-full-file-transmission.db");
@@ -670,17 +727,22 @@ mod test {
             tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
 
         let msg = socket.read_message().unwrap();
-        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id)
-            .try_into()
-            .unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq {
+            public_id: token.public_id,
+        }
+        .try_into()
+        .unwrap();
         assert_eq!(msg.into_data(), expected_data);
 
         // send auth message to the server
         socket
             .write_message(Message::Binary(
-                ws_com_framework::Message::AuthRes(token.public_id, token.passcode.into())
-                    .try_into()
-                    .unwrap(),
+                ws_com_framework::Message::AuthRes {
+                    public_id: token.public_id,
+                    passcode: token.passcode.into(),
+                }
+                .try_into()
+                .unwrap(),
             ))
             .unwrap();
 
@@ -690,7 +752,7 @@ mod test {
         assert_eq!(msg.into_data(), expected_bytes);
 
         // reuse client to send file request to server
-        let get_url = format!("http://{}/download/{}/{}", address, token.public_id, 24);
+        let get_url = format!("http://{}/agents/{}/files/{}", address, token.public_id, 24);
         let res = tokio::task::spawn(async move {
             let res = client.get(get_url).send().await.unwrap();
 
@@ -714,7 +776,10 @@ mod test {
 
         let data: ws_com_framework::Message = msg.into_data().try_into().unwrap();
         match data {
-            ws_com_framework::Message::UploadTo(file_id, upload_url) => {
+            ws_com_framework::Message::UploadTo {
+                file_id,
+                upload_url,
+            } => {
                 assert_eq!(file_id, 24);
 
                 //upload file to server
@@ -743,6 +808,135 @@ mod test {
 
         let got_res = got_res.text().await.unwrap();
         assert_eq!(got_res, "hello, world");
+
+        //kill the std thread without waiting
+        if let Err(e) = tx.send(()) {
+            error!("{:?}", e);
+        }
+        handle.join().unwrap();
+
+        // remove database file
+        std::fs::remove_file(database_url).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[timeout(20_000)]
+    async fn test_status_request() {
+        init_logger();
+        let database_url = String::from("./test-db-test-status-request.db");
+        let port = find_open_port();
+        let address = format!("127.0.0.1:{}", port.local_addr().unwrap().port());
+        let (_, _, handle, tx) = create_server(database_url.clone(), port).await;
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // make POST request to http endpoint at /register to get a token
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/register", address))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success());
+
+        let token = res.json::<AuthToken>().await.unwrap();
+
+        // create a websocket connection to the server
+        let (mut socket, _) =
+            tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
+
+        let msg = socket.read_message().unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq {
+            public_id: token.public_id,
+        }
+        .try_into()
+        .unwrap();
+        assert_eq!(msg.into_data(), expected_data);
+
+        //send auth message to server
+        socket
+            .write_message(Message::Binary(
+                ws_com_framework::Message::AuthRes {
+                    public_id: token.public_id,
+                    passcode: token.passcode.into(),
+                }
+                .try_into()
+                .unwrap(),
+            ))
+            .unwrap();
+
+        // expect OK response
+        let msg = socket.read_message().unwrap();
+        let expected_bytes: Vec<u8> = ws_com_framework::Message::Ok.try_into().unwrap();
+        assert_eq!(msg.into_data(), expected_bytes);
+
+        // reuse client to send status request to the server
+        let get_url = format!("http://{}/agents/{}", address, token.public_id);
+        let res = tokio::task::spawn(async move {
+            let res = client.get(get_url).send().await.unwrap();
+
+            info!("got response {:?}", res);
+            assert!(res.status().is_success());
+
+            res
+        });
+
+        // read messages until we get a binary message type
+        let mut msg: Message = socket.read_message().unwrap();
+        while !matches!(msg, Message::Binary(_)) {
+            info!("got message: {:?}", msg);
+            (msg, socket) = tokio::task::spawn_blocking(move || {
+                let msg = socket.read_message().unwrap();
+                (msg, socket)
+            })
+            .await
+            .unwrap();
+        }
+
+        let data: ws_com_framework::Message = msg.into_data().try_into().unwrap();
+        match data {
+            ws_com_framework::Message::StatusReq {
+                public_id,
+                upload_id,
+            } => {
+                //send status response to server
+                socket
+                    .write_message(Message::Binary(
+                        ws_com_framework::Message::StatusRes {
+                            public_id,
+                            ready: true,
+                            uptime: 1230,
+                            upload_id,
+                            message: Some(String::from("hello, world - I'm alive!")),
+                        }
+                        .try_into()
+                        .unwrap(),
+                    ))
+                    .unwrap();
+            }
+            m => panic!("expected status req message {:?}", m),
+        }
+
+        // validate that the status was received
+        let got_res = res.await.unwrap();
+        assert!(got_res.status().is_success());
+
+        //validate that content type header is present and set to application/json
+        let content_type = got_res.headers().get("content-type").unwrap();
+        assert_eq!(content_type, "application/json");
+
+        #[derive(Debug, Deserialize)]
+        struct AgentStatus {
+            ready: bool,
+            uptime: u64,
+            message: String,
+        }
+
+        let got_res = got_res.json::<AgentStatus>().await.unwrap();
+        assert!(got_res.ready);
+        assert_eq!(got_res.uptime, 1230);
+        assert_eq!(got_res.message, "hello, world - I'm alive!");
 
         //kill the std thread without waiting
         if let Err(e) = tx.send(()) {

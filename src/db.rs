@@ -1,6 +1,7 @@
 use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
+    time::UNIX_EPOCH,
 };
 
 use crate::{
@@ -13,9 +14,12 @@ use diesel::{
     r2d2::{ConnectionManager, Pool},
     ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, SqliteConnection,
 };
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use log::trace;
 use sha2::{Digest, Sha256};
 use ws_com_framework::Passcode;
+
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 type DbPool = Pool<ConnectionManager<SqliteConnection>>;
 
@@ -53,17 +57,17 @@ pub struct Database(DbPool);
 impl Database {
     /// Attempt to initalise the database with generic sql
     pub async fn init(&self) -> Result<(), DbBackendError> {
-        let init_sql: &str = include_str!("../migrations/2022-04-10-095111_create_agents/up.sql");
-
         let mut conn = self
             .0
             .get()
             .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
 
-        web::block(move || diesel::sql_query(init_sql).execute(&mut conn))
-            .await
-            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
-            .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+        web::block(move || {
+            conn.exclusive_transaction(|conn| conn.run_pending_migrations(MIGRATIONS).map(|_| ()))
+        })
+        .await
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
 
         Ok(())
     }
@@ -107,6 +111,10 @@ impl DbBackend for Database {
         let new_agent: NewAgent = NewAgent {
             public_id: server_id as i64,
             secure_key: hasher.finalize().to_vec(), //hash passcode
+            last_seen: std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time went backwards")
+                .as_secs() as i64,
         };
 
         let mut conn = self

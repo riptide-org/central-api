@@ -158,7 +158,7 @@ paths:
           description: Unique public id of the Agent to find
       responses:
         '200':
-          description: Succesfully contacted the api for it's status, and it is ready to work.
+          description: Successfully contacted the api for it's status, and it is ready to work.
           content:
             json/application:
               schema:
@@ -188,7 +188,7 @@ paths:
                 uptime: 0
       tags:
         - Client
-  /agents/{agentId}/files/{fileId}:
+  /agents/{agentId}/files/{fileId}/metadata:
     get:
       summary: Collect information (metadata) about a file.
       description: Contact an Agent connected to the server to collect metadata about a file. Etag valid is provided in a header for versioning.
@@ -233,7 +233,7 @@ paths:
                   message: "This agent is not currently connected to the api, or does not exist!"
       tags:
         - Client
-  /agents/{agentId}/files/{fileId}/download:
+  /agents/{agentId}/files/{fileId}:
     get:
       summary: Attempt to download a file from an agent.
       parameters:
