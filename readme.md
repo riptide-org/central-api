@@ -1,6 +1,9 @@
 # Central API
 
-The central api for the file-share-platform. Handles websocket conenctions from server agents, and requests from clients who wish to download a file.
+![Test](https://github.com/riptide-org/central-api/actions/workflows/precommit.yml/badge.svg)
+[![codecov](https://codecov.io/gh/riptide-org/central-api/branch/main/graph/badge.svg?token=ALQI2M77DH)](https://codecov.io/gh/riptide-org/central-api)
+
+The central api for the file-share-platform. Handles websocket connections from server agents, and requests from clients who wish to download a file.
 
 ## Instructions
 
