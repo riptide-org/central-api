@@ -8,6 +8,11 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 RUN apt-get update
 RUN apt-get install -y cmake
+RUN wget https://github.com/protocolbuffers/protobuf/releases/download/v3.20.0/protoc-3.20.0-linux-x86_64.zip
+RUN unzip protoc-3.20.0-linux-x86_64.zip
+RUN cp -r include/* /usr/local/include
+RUN cp bin/protoc /usr/bin/
+
 COPY --from=planner /app/recipe.json recipe.json
 # Build dependencies - this is the caching Docker layer!
 RUN cargo chef cook --release --recipe-path recipe.json

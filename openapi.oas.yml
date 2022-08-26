@@ -145,23 +145,6 @@ paths:
                 $ref: '#/components/schemas/ApiCredentials'
       tags:
         - Agent
-  /agents:
-    summary: An endpoint which represents all Agents currently connected to the Api.
-    get:
-      summary: Get the list of all agents connected to the api.
-      responses:
-        '200':
-          description: Succesfully collected the list of agents connected to the api. May be empty.
-          content:
-            json/application:
-              schema:
-                type: array
-                items:
-                  type: string
-                  example: 3jd87c
-                  description: A string representing the id of a connected agent.
-      tags:
-        - Client
   /agents/{agentId}:
     summary: Get the status of a Server Agenet.
     get:
@@ -175,7 +158,7 @@ paths:
           description: Unique public id of the Agent to find
       responses:
         '200':
-          description: Succesfully contacted the api for it's status, and it is ready to work.
+          description: Successfully contacted the api for it's status, and it is ready to work.
           content:
             json/application:
               schema:
@@ -205,7 +188,7 @@ paths:
                 uptime: 0
       tags:
         - Client
-  /agents/{agentId}/files/{fileId}:
+  /agents/{agentId}/files/{fileId}/metadata:
     get:
       summary: Collect information (metadata) about a file.
       description: Contact an Agent connected to the server to collect metadata about a file. Etag valid is provided in a header for versioning.
@@ -250,7 +233,7 @@ paths:
                   message: "This agent is not currently connected to the api, or does not exist!"
       tags:
         - Client
-  /agents/{agentId}/files/{fileId}/download:
+  /agents/{agentId}/files/{fileId}:
     get:
       summary: Attempt to download a file from an agent.
       parameters:

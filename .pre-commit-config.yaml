@@ -25,8 +25,17 @@ repos:
         types: [file, rust]
         language: system
 
+-   repo: local
+    hooks:
+    -   id: run-tests
+        name: Run Tests
+        entry: bash -c 'cargo test --all'
+        language: system
+        types: [file, rust]
+        pass_filenames: false
+
 -   repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: 'v0.32.0'
+    rev: 'v0.32.2'
     hooks:
     -   id: markdownlint-fix
         args: ['--fix']

@@ -4,40 +4,58 @@
     missing_docs,
     missing_debug_implementations,
     missing_copy_implementations,
+    // clippy::missing_docs_in_private_items, //TODO
     trivial_casts,
     trivial_numeric_casts,
     unsafe_code,
     unstable_features,
     unused_import_braces,
     unused_qualifications,
-    // deprecated
+    deprecated
 )]
+
+//TODO: if a request is present for more than 50 seconds, time it out and return an error - they shouldn't hang around in the
+// state.
+
+//TODO: remove unauthenticated agents after 5 minutes
+
+//TODO: update the last_seen timer whenever an agent authenticates.
+//TODO: force agents to reauthenticate periodically
+//TODO: expand configuration to cover all attached variables, in a separate module and pass that throughout the application
+//TODO: refactor return types into a global constant for the entire application
+//TODO: relevant to above, refactor the metadata/status response generation from websockets into download/info
+//TODO: refactor the integration tests in websockets.rs into a file in tests/integration.rs
+//TODO: add more unit tests generally speaking, and add integration tests for information endpoints, and metadata
+//TODO: add test to ensure that the agent is removed from the state when it disconnects
+//TODO: write tests to cover error states
+//TODO: refactor the openapi.oas.yml file to reduce duplication
+//TODO: update /info endpoints to return more information on individual nodes (include data on whether they're authenticated or not)
+//TODO: allow some users to optionally cache the metadata/status response for a period of time, to reduce the number of requests
+//TODO: allow some users to optionally cache the file upload itself for a period of time (e.g. 5 minutes), to reduce the number of requests
+//TODO: add size/item limits for both of the above
+//TODO: add rate limiting for all endpoints - can be implemented as middleware
 
 #[macro_use]
 extern crate diesel;
 
-mod auth;
 mod db;
-mod download;
+mod endpoints;
 mod error;
 mod models;
 #[cfg(not(tarpaulin_include))]
 mod schema;
-mod upload;
-mod websockets;
 
 use actix_web::{
     error::PayloadError,
-    get,
     middleware::Logger,
     web::{self, Bytes},
     App, HttpServer,
 };
 use db::{Database, DbBackend};
 use dotenv::dotenv;
+use endpoints::websockets::InternalComm as WsInternalComm;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, RwLock};
-use websockets::InternalComm as WsInternalComm;
 use ws_com_framework::PublicId as ServerId;
 
 type RequestId = u64;
@@ -53,12 +71,8 @@ pub struct State {
     requests: RwLock<HashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,
     /// The base URL of this server
     base_url: String,
-}
-
-/// endpoint which returns information about the api (GET /info)
-#[get("/info")]
-async fn info() -> impl actix_web::Responder {
-    "Central API"
+    /// The instant that the server started
+    start_time: std::time::Instant,
 }
 
 #[actix_web::main]
@@ -81,6 +95,7 @@ async fn main() -> std::io::Result<()> {
         servers: Default::default(),
         requests: RwLock::new(HashMap::new()),
         base_url: domain,
+        start_time: std::time::Instant::now(),
     });
     let database = web::Data::new(
         Database::new(db_url)
@@ -93,12 +108,11 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(state.clone())
             .app_data(database.clone())
-            .service(auth::register)
-            .service(websockets::websocket)
-            .service(download::metadata)
-            .service(download::download)
-            .service(upload::upload)
-            .service(info)
+            .service(endpoints::auth::register)
+            .service(endpoints::upload::upload)
+            .service(endpoints::websockets::websocket)
+            .configure(endpoints::info::configure)
+            .configure(endpoints::download::configure)
             .wrap(Logger::default())
     })
     .bind((host, port))?
