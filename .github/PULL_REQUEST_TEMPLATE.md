@@ -1,13 +1,16 @@
-# Description
+# Pull Request
+
+## Description
 
 Please include a summary of the change and which issue is fixed. Please also include relevant motivation and context. List any dependencies that are required for this change.
 
 Fixes # (issue)
 
-# Todo
+## Todo
+
 - [ ] List what should be changed about your projet here!
 
-# Checklist:
+## Checklist
 
 - [ ] I have run clippy and followed all lints.
 - [ ] I have run rust fmt already.

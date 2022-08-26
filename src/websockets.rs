@@ -1,7 +1,12 @@
 use std::time::Duration;
 
 use actix::{Actor, AsyncContext, StreamHandler};
-use actix_web::{get, web::{self, Bytes}, HttpRequest, HttpResponse, Responder, error::PayloadError};
+use actix_web::{
+    error::PayloadError,
+    get,
+    web::{self, Bytes},
+    HttpRequest, HttpResponse, Responder,
+};
 use actix_web_actors::ws::{self, CloseCode, CloseReason};
 use log::{debug, error, info, trace};
 use tokio::sync::mpsc;
@@ -121,7 +126,9 @@ where
             }
 
             match act.internal_rx.try_recv() {
-                Ok(InternalComm::Authenticated) => act.authentication = Authentication::Authenticated,
+                Ok(InternalComm::Authenticated) => {
+                    act.authentication = Authentication::Authenticated
+                }
                 Ok(InternalComm::CloseConnection) => close_connection!(),
                 Ok(InternalComm::ShutDownComplete) => act.ws_state = WsState::Stopped,
                 Ok(InternalComm::SendMessage(msg)) => {
@@ -258,7 +265,8 @@ where
                                         {
                                             error!("unable to send auth failure req to peer due to error {:?}", e);
                                         }
-                                        if let Err(e) = tx.send(InternalComm::CloseConnection).await {
+                                        if let Err(e) = tx.send(InternalComm::CloseConnection).await
+                                        {
                                             error!("unable to close connection to peer {:?}", e);
                                         }
                                     }
@@ -318,7 +326,9 @@ where
     T: futures::Stream<Item = Result<Bytes, PayloadError>> + 'static,
 {
     let (tx, rx) = mpsc::channel(100);
-    tx.send(InternalComm::SendMessage(Message::AuthReq(server_id))).await.unwrap();
+    tx.send(InternalComm::SendMessage(Message::AuthReq(server_id)))
+        .await
+        .unwrap();
 
     if state.servers.read().await.contains_key(&server_id) {
         return Ok(
@@ -326,7 +336,11 @@ where
         );
     }
 
-    state.unauthenticated_servers.write().await.insert(server_id, tx.clone());
+    state
+        .unauthenticated_servers
+        .write()
+        .await
+        .insert(server_id, tx.clone());
 
     ws::start(
         WsHandler {
@@ -359,17 +373,25 @@ pub async fn websocket(
 #[cfg(test)]
 #[cfg(not(tarpaulin_include))]
 mod test {
-    use std::{sync::Once, collections::HashMap, task::Poll, thread::JoinHandle};
+    use std::{collections::HashMap, sync::Once, task::Poll, thread::JoinHandle};
 
-    use actix_web::{web::{Data, Bytes}, error::PayloadError, App, HttpServer, middleware::Logger};
+    use actix_web::{
+        error::PayloadError,
+        middleware::Logger,
+        web::{Bytes, Data},
+        App, HttpServer,
+    };
     use futures::Stream;
     use log::{error, info};
-    use serde::{Serialize, Deserialize};
-    use tokio::{sync::{RwLock, mpsc::UnboundedReceiver, oneshot}};
+    use serde::{Deserialize, Serialize};
+    use tokio::sync::{mpsc::UnboundedReceiver, oneshot, RwLock};
     use tungstenite::Message;
     use ws_com_framework::error::ErrorKind;
 
-    use crate::{db::{DbBackend, Database}, State};
+    use crate::{
+        db::{Database, DbBackend},
+        State,
+    };
 
     static INIT: Once = Once::new();
 
@@ -391,7 +413,10 @@ mod test {
 
     impl Stream for MockStreamer {
         type Item = Result<Bytes, PayloadError>;
-        fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> Poll<Option<Self::Item>> {
             match self.rx.poll_recv(cx) {
                 Poll::Ready(Some(x)) => Poll::Ready(Some(Ok(Bytes::from_iter(x)))),
                 Poll::Ready(None) => Poll::Ready(None),
@@ -403,13 +428,21 @@ mod test {
     fn find_open_port() -> std::net::TcpListener {
         for port in 1025..65535 {
             if let Ok(l) = std::net::TcpListener::bind(("127.0.0.1", port)) {
-                return l
+                return l;
             }
         }
-       panic!("no open ports found");
+        panic!("no open ports found");
     }
 
-    async fn create_server(database_url: String, port: std::net::TcpListener) -> (Data<Database>, Data<State>,JoinHandle<()>, oneshot::Sender<()>) {
+    async fn create_server(
+        database_url: String,
+        port: std::net::TcpListener,
+    ) -> (
+        Data<Database>,
+        Data<State>,
+        JoinHandle<()>,
+        oneshot::Sender<()>,
+    ) {
         let state = Data::new(State {
             unauthenticated_servers: Default::default(),
             servers: Default::default(),
@@ -417,7 +450,11 @@ mod test {
             base_url: "https://localhost:8080".into(),
         });
 
-        let db = Data::new(Database::new(database_url).await.expect("a valid database connection"));
+        let db = Data::new(
+            Database::new(database_url)
+                .await
+                .expect("a valid database connection"),
+        );
 
         let server_db = db.clone();
         let server_state = state.clone();
@@ -434,7 +471,6 @@ mod test {
                     .service(crate::download::download)
                     .service(crate::upload::upload)
                     .wrap(Logger::default())
-
             })
             .listen(port)
             .unwrap()
@@ -483,17 +519,30 @@ mod test {
         assert!(db.contains_entry(&token.public_id).await.unwrap());
 
         // create a websocket connection to the server
-        let (mut socket, _) = tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
+        let (mut socket, _) =
+            tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
 
         let msg = socket.read_message().unwrap();
-        let expected_bytes: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id).try_into().unwrap();
+        let expected_bytes: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id)
+            .try_into()
+            .unwrap();
         assert_eq!(msg.into_data(), expected_bytes);
 
         // check that the state contains us as an entry in unauthenticated_servers
-        assert!(state.unauthenticated_servers.read().await.contains_key(&token.public_id));
+        assert!(state
+            .unauthenticated_servers
+            .read()
+            .await
+            .contains_key(&token.public_id));
 
         // send auth message to the server
-        socket.write_message(Message::Binary(ws_com_framework::Message::AuthRes(token.public_id, token.passcode.into()).try_into().unwrap())).unwrap();
+        socket
+            .write_message(Message::Binary(
+                ws_com_framework::Message::AuthRes(token.public_id, token.passcode.into())
+                    .try_into()
+                    .unwrap(),
+            ))
+            .unwrap();
 
         // expect OK response
         let msg = socket.read_message().unwrap();
@@ -501,7 +550,11 @@ mod test {
         assert_eq!(msg.into_data(), expected_bytes);
 
         // check that the state no longer contains us as an entry in unauthenticated_servers
-        assert!(!state.unauthenticated_servers.read().await.contains_key(&token.public_id));
+        assert!(!state
+            .unauthenticated_servers
+            .read()
+            .await
+            .contains_key(&token.public_id));
 
         // check that the state contains us as an entry in servers
         assert!(state.servers.read().await.contains_key(&token.public_id));
@@ -547,18 +600,32 @@ mod test {
         let token: AuthToken = res.json().await.unwrap();
 
         // create a websocket connection to the server
-        let (mut socket, _) = tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
+        let (mut socket, _) =
+            tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
 
         let msg = socket.read_message().unwrap();
-        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id).try_into().unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id)
+            .try_into()
+            .unwrap();
         assert_eq!(msg.into_data(), expected_data);
 
         // send auth message with invalid passcode
-        socket.write_message(Message::Binary(ws_com_framework::Message::AuthRes(token.public_id, "invalid".into()).try_into().unwrap())).unwrap();
+        socket
+            .write_message(Message::Binary(
+                ws_com_framework::Message::AuthRes(token.public_id, "invalid".into())
+                    .try_into()
+                    .unwrap(),
+            ))
+            .unwrap();
 
         //validate we got error response
         let msg = socket.read_message().unwrap();
-        let expected_data: Vec<u8> = ws_com_framework::Message::Error(Some("failed authentication".into()), ErrorKind::InvalidSession).try_into().unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::Error(
+            Some("failed authentication".into()),
+            ErrorKind::InvalidSession,
+        )
+        .try_into()
+        .unwrap();
         assert_eq!(msg.into_data(), expected_data);
 
         // validate that the socket was closed
@@ -598,14 +665,23 @@ mod test {
         let token: AuthToken = res.json().await.unwrap();
 
         // create a websocket connection to the server
-        let (mut socket, _) = tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
+        let (mut socket, _) =
+            tungstenite::connect(format!("ws://{}/ws/{}", address, token.public_id)).unwrap();
 
         let msg = socket.read_message().unwrap();
-        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id).try_into().unwrap();
+        let expected_data: Vec<u8> = ws_com_framework::Message::AuthReq(token.public_id)
+            .try_into()
+            .unwrap();
         assert_eq!(msg.into_data(), expected_data);
 
         // send auth message to the server
-        socket.write_message(Message::Binary(ws_com_framework::Message::AuthRes(token.public_id, token.passcode.into()).try_into().unwrap())).unwrap();
+        socket
+            .write_message(Message::Binary(
+                ws_com_framework::Message::AuthRes(token.public_id, token.passcode.into())
+                    .try_into()
+                    .unwrap(),
+            ))
+            .unwrap();
 
         // expect OK response
         let msg = socket.read_message().unwrap();
@@ -615,11 +691,7 @@ mod test {
         // reuse client to send file request to server
         let get_url = format!("http://{}/download/{}/{}", address, token.public_id, 24);
         let res = tokio::task::spawn(async move {
-            let res = client
-                .get(get_url)
-                .send()
-                .await
-                .unwrap();
+            let res = client.get(get_url).send().await.unwrap();
 
             info!("got response {:?}", res);
             assert!(res.status().is_success());
@@ -634,7 +706,9 @@ mod test {
             (msg, socket) = tokio::task::spawn_blocking(move || {
                 let msg = socket.read_message().unwrap();
                 (msg, socket)
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
         }
 
         let data: ws_com_framework::Message = msg.into_data().try_into().unwrap();
@@ -643,7 +717,9 @@ mod test {
                 assert_eq!(file_id, 24);
 
                 //upload file to server
-                let upload_url = upload_url.replace("localhost:8080", &address).replace("https", "http");
+                let upload_url = upload_url
+                    .replace("localhost:8080", &address)
+                    .replace("https", "http");
 
                 info!("attempting to upload to {}", upload_url);
 

@@ -28,16 +28,17 @@ mod websockets;
 
 use actix_web::{
     error::PayloadError,
+    get,
+    middleware::Logger,
     web::{self, Bytes},
-    App, HttpServer, middleware::Logger,
+    App, HttpServer,
 };
 use db::{Database, DbBackend};
+use dotenv::dotenv;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, RwLock};
-use ws_com_framework::PublicId as ServerId;
 use websockets::InternalComm as WsInternalComm;
-use dotenv::dotenv;
-
+use ws_com_framework::PublicId as ServerId;
 
 type RequestId = u64;
 
@@ -54,6 +55,12 @@ pub struct State {
     base_url: String,
 }
 
+/// endpoint which returns information about the api (GET /info)
+#[get("/info")]
+async fn info() -> impl actix_web::Responder {
+    "Central API"
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     pretty_env_logger::init();
@@ -62,7 +69,10 @@ async fn main() -> std::io::Result<()> {
     dotenv().ok();
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let domain = std::env::var("DOMAIN").expect("DOMAIN must be set");
-    let port = std::env::var("PORT").expect("PORT must be set").parse().expect("PORT must be a number");
+    let port = std::env::var("PORT")
+        .expect("PORT must be set")
+        .parse()
+        .expect("PORT must be a number");
     let host = std::env::var("HOST").expect("HOST must be set");
 
     // initalise system default state and database
@@ -72,7 +82,11 @@ async fn main() -> std::io::Result<()> {
         requests: RwLock::new(HashMap::new()),
         base_url: domain,
     });
-    let database = web::Data::new(Database::new(db_url).await.expect("a valid database connection"));
+    let database = web::Data::new(
+        Database::new(db_url)
+            .await
+            .expect("a valid database connection"),
+    );
 
     // begin listening for connections
     HttpServer::new(move || {
@@ -84,6 +98,7 @@ async fn main() -> std::io::Result<()> {
             .service(download::metadata)
             .service(download::download)
             .service(upload::upload)
+            .service(info)
             .wrap(Logger::default())
     })
     .bind((host, port))?
