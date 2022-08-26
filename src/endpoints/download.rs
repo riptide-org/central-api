@@ -117,13 +117,14 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
                     }
                 },
                 _ = time::sleep(tokio::time::Duration::from_secs(5)) => { //XXX: add configurable timeout
+                    // attempt to remove the job from the requests
                     yield Ok(Bytes::from_static(b"download failed"))
                 },
             }
         };
 
-        // attempt to remove the job from the requests
-        state.requests.write().await.remove(&download_id);
+        //TODO; setup something like this to run after a given period, stripping the job from the requests
+        // state.requests.write().await.remove(&download_id);
 
         //create a streaming response
         HttpResponse::Ok()
