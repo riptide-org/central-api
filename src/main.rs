@@ -4,31 +4,28 @@
     missing_docs,
     missing_debug_implementations,
     missing_copy_implementations,
+    // clippy::missing_docs_in_private_items,
     trivial_casts,
     trivial_numeric_casts,
     unsafe_code,
     unstable_features,
     unused_import_braces,
     unused_qualifications,
-    // deprecated
+    deprecated
 )]
 
 #[macro_use]
 extern crate diesel;
 
-mod auth;
+mod endpoints;
 mod db;
-mod download;
 mod error;
 mod models;
 #[cfg(not(tarpaulin_include))]
 mod schema;
-mod upload;
-mod websockets;
 
 use actix_web::{
     error::PayloadError,
-    get,
     middleware::Logger,
     web::{self, Bytes},
     App, HttpServer,
@@ -37,7 +34,7 @@ use db::{Database, DbBackend};
 use dotenv::dotenv;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, RwLock};
-use websockets::InternalComm as WsInternalComm;
+use endpoints::websockets::InternalComm as WsInternalComm;
 use ws_com_framework::PublicId as ServerId;
 
 type RequestId = u64;
@@ -53,12 +50,8 @@ pub struct State {
     requests: RwLock<HashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,
     /// The base URL of this server
     base_url: String,
-}
-
-/// endpoint which returns information about the api (GET /info)
-#[get("/info")]
-async fn info() -> impl actix_web::Responder {
-    "Central API"
+    /// The instant that the server started
+    start_time: std::time::Instant,
 }
 
 #[actix_web::main]
@@ -81,6 +74,7 @@ async fn main() -> std::io::Result<()> {
         servers: Default::default(),
         requests: RwLock::new(HashMap::new()),
         base_url: domain,
+        start_time: std::time::Instant::now(),
     });
     let database = web::Data::new(
         Database::new(db_url)
@@ -93,12 +87,11 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(state.clone())
             .app_data(database.clone())
-            .service(auth::register)
-            .service(websockets::websocket)
-            .service(download::metadata)
-            .service(download::download)
-            .service(upload::upload)
-            .service(info)
+            .service(endpoints::auth::register)
+            .service(endpoints::upload::upload)
+            .service(endpoints::websockets::websocket)
+            .configure(endpoints::info::configure)
+            .configure(endpoints::download::configure)
             .wrap(Logger::default())
     })
     .bind((host, port))?

@@ -86,6 +86,7 @@ mod test {
             servers: Default::default(),
             requests: RwLock::new(HashMap::new()),
             base_url: "https://localhost:8080".into(),
+            start_time: std::time::Instant::now(),
         });
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);

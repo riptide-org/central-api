@@ -448,6 +448,7 @@ mod test {
             servers: Default::default(),
             requests: RwLock::new(HashMap::new()),
             base_url: "https://localhost:8080".into(),
+            start_time: std::time::Instant::now(),
         });
 
         let db = Data::new(
@@ -466,10 +467,10 @@ mod test {
                     .app_data(server_db.clone())
                     .app_data(server_state.clone())
                     .service(super::websocket)
-                    .service(crate::auth::register)
-                    .service(crate::download::metadata)
-                    .service(crate::download::download)
-                    .service(crate::upload::upload)
+                    .service(crate::endpoints::auth::register)
+                    .service(crate::endpoints::download::metadata)
+                    .service(crate::endpoints::download::download)
+                    .service(crate::endpoints::upload::upload)
                     .wrap(Logger::default())
             })
             .listen(port)

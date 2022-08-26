@@ -8,7 +8,7 @@ Fixes # (issue)
 
 ## Todo
 
-- [ ] List what should be changed about your projet here!
+- [ ] List what should be changed about your project here!
 
 ## Checklist
 

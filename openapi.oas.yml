@@ -145,23 +145,6 @@ paths:
                 $ref: '#/components/schemas/ApiCredentials'
       tags:
         - Agent
-  /agents:
-    summary: An endpoint which represents all Agents currently connected to the Api.
-    get:
-      summary: Get the list of all agents connected to the api.
-      responses:
-        '200':
-          description: Succesfully collected the list of agents connected to the api. May be empty.
-          content:
-            json/application:
-              schema:
-                type: array
-                items:
-                  type: string
-                  example: 3jd87c
-                  description: A string representing the id of a connected agent.
-      tags:
-        - Client
   /agents/{agentId}:
     summary: Get the status of a Server Agenet.
     get:

@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ws-com-framework = { git="https://github.com/file-share-platform/ws-com-framework", rev="d7dcd58cd2e445e2a344a1bbbdd089a5b9ee585f" }
+ws-com-framework = { git="https://github.com/file-share-platform/ws-com-framework", rev="274d57739fcd9995b30f953d4467141f3da23b24" }
 sha2 = "0.10.2"
+serde = {version = "1.0.144", features = ["derive"]}
 
 async-trait = "0.1.57"
 
@@ -24,7 +25,6 @@ rand = "0.8.5"
 diesel = { git="https://github.com/diesel-rs/diesel.git", rev="596cdd21cc4aa4cefeccdcb3988c14f9a01ed6de", features = ["r2d2", "sqlite", "returning_clauses_for_sqlite_3_35"] }
 
 [dev-dependencies]
-serde = {version = "1.0.144", features = ["derive"]}
 serde_json = "1.0.85"
 tungstenite = "0.17.3"
 reqwest = { version="0.11.11", features = ["json"] }

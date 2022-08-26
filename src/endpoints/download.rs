@@ -1,6 +1,6 @@
 use actix_web::{
     get,
-    web::{Bytes, Data, Path},
+    web::{Bytes, Data, Path, self},
     HttpRequest, HttpResponse,
 };
 use log::trace;
@@ -8,7 +8,13 @@ use rand::Rng;
 use tokio::{sync::mpsc, time};
 use ws_com_framework::{FileId, Message};
 
-use crate::{websockets::InternalComm, ServerId, State};
+use crate::{endpoints::websockets::InternalComm, ServerId, State};
+
+pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg
+        .service(download)
+        .service(metadata);
+}
 
 async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpResponse {
     let (server_id, file_id) = path;
@@ -129,7 +135,7 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
 }
 
 /// Download a file from a client
-#[get("/download/{server_id}/{file_id}")]
+#[get("/agents/{server_id}/files/{file_id}")]
 pub async fn download(
     _: HttpRequest,
     state: Data<State>,
@@ -139,7 +145,7 @@ pub async fn download(
     __download((s_id, f_id), state).await
 }
 
-#[get("/metadata/{server_id}/{file_id}")]
+#[get("/agents/{server_id}/files/{file_id}/download")]
 pub async fn metadata(
     _: HttpRequest,
     state: Data<State>,
@@ -166,7 +172,7 @@ mod test {
     };
     use ws_com_framework::Message;
 
-    use crate::{websockets::InternalComm, RequestId, State};
+    use crate::{endpoints::websockets::InternalComm, RequestId, State};
 
     use super::{__download, __metadata};
 
@@ -181,6 +187,7 @@ mod test {
             servers: Default::default(),
             requests: RwLock::new(HashMap::new()),
             base_url: "https://localhost:8080".into(),
+            start_time: std::time::Instant::now(),
         });
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
@@ -246,6 +253,7 @@ mod test {
             servers: Default::default(),
             requests: RwLock::new(HashMap::new()),
             base_url: "https://localhost:8080".into(),
+            start_time: std::time::Instant::now(),
         });
 
         let resp = __download((server_id, file_id), state.clone()).await;
@@ -277,6 +285,7 @@ mod test {
             servers: Default::default(),
             requests: RwLock::new(HashMap::new()),
             base_url: "https://localhost:8080".into(),
+            start_time: std::time::Instant::now(),
         });
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
@@ -337,6 +346,7 @@ mod test {
             servers: Default::default(),
             requests: RwLock::new(HashMap::new()),
             base_url: "https://localhost:8080".into(),
+            start_time: std::time::Instant::now(),
         });
 
         let resp = __metadata((server_id, file_id), state.clone()).await;
