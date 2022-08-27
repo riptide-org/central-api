@@ -1,3 +1,5 @@
+//! Handles authentication and registration of agents to the api
+
 use actix_web::{post, web::Data, HttpResponse};
 use log::error;
 use rand::{distributions::Alphanumeric, Rng};
@@ -42,6 +44,7 @@ async fn __register(state: impl DbBackend) -> Result<HttpResponse, HttpError> {
         )))
 }
 
+/// Endpoint for registering a new agent with the api (POST /register)
 #[post("/register")]
 pub async fn register(state: Data<Database>) -> impl actix_web::Responder {
     __register(state).await

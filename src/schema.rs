@@ -1,3 +1,5 @@
+#![allow(clippy::all, missing_docs)]
+
 table! {
     agents (id) {
         id -> Integer,

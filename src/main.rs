@@ -28,7 +28,7 @@
 //TODO: add more unit tests generally speaking, and add integration tests for information endpoints, and metadata
 //TODO: add test to ensure that the agent is removed from the state when it disconnects
 //TODO: write tests to cover error states
-//TODO: refactor the openapi.oas.yml file to reduce duplication
+//TODO: refactor the `openapi.oas.yml` file to reduce duplication
 //TODO: update /info endpoints to return more information on individual nodes (include data on whether they're authenticated or not)
 //TODO: allow some users to optionally cache the metadata/status response for a period of time, to reduce the number of requests
 //TODO: allow some users to optionally cache the file upload itself for a period of time (e.g. 5 minutes), to reduce the number of requests
@@ -38,12 +38,12 @@
 #[macro_use]
 extern crate diesel;
 
-mod db;
-mod endpoints;
-mod error;
-mod models;
+pub mod db;
+pub mod endpoints;
+pub mod error;
+pub mod models;
 #[cfg(not(tarpaulin_include))]
-mod schema;
+pub mod schema;
 
 use actix_web::{
     error::PayloadError,
@@ -64,15 +64,15 @@ type RequestId = u64;
 #[derive(Debug)]
 pub struct State {
     /// Websockets that are connected, but have not yet completed authentication
-    unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
+    pub unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
     /// Connected websockets that are valid, and have responded to a ping within the last X seconds
-    servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
+    pub servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
     /// Actively waiting requests that need an agent to respond - that also haven't timed out yet
-    requests: RwLock<HashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,
+    pub requests: RwLock<HashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,
     /// The base URL of this server
-    base_url: String,
+    pub base_url: String,
     /// The instant that the server started
-    start_time: std::time::Instant,
+    pub start_time: std::time::Instant,
 }
 
 #[actix_web::main]

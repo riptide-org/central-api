@@ -5,3 +5,5 @@ debug.rs
 .env
 *.db
 lcov.info
+cobertura.xml
+coverage.cobertura.xml

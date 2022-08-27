@@ -1,3 +1,5 @@
+//! Handles the upload of files to the api, forwarding to clients
+
 use actix_web::{
     error::PayloadError,
     post,

@@ -1,7 +1,9 @@
+//! Handles downloading of various items from the central api
+
 use actix_web::{
     get,
     web::{self, Bytes, Data, Path},
-    HttpRequest, HttpResponse,
+    HttpResponse,
 };
 use log::trace;
 use rand::Rng;
@@ -10,6 +12,7 @@ use ws_com_framework::{FileId, Message};
 
 use crate::{endpoints::websockets::InternalComm, ServerId, State};
 
+/// configure the download and metadata services
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(download).service(metadata);
 }
@@ -144,21 +147,13 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
 
 /// Download a file from a client
 #[get("/agents/{server_id}/files/{file_id}")]
-pub async fn download(
-    _: HttpRequest,
-    state: Data<State>,
-    path: Path<(ServerId, FileId)>,
-) -> impl actix_web::Responder {
+async fn download(state: Data<State>, path: Path<(ServerId, FileId)>) -> impl actix_web::Responder {
     let (s_id, f_id) = path.into_inner();
     __download((s_id, f_id), state).await
 }
 
 #[get("/agents/{server_id}/files/{file_id}/metadata")]
-pub async fn metadata(
-    _: HttpRequest,
-    state: Data<State>,
-    path: Path<(ServerId, FileId)>,
-) -> impl actix_web::Responder {
+async fn metadata(state: Data<State>, path: Path<(ServerId, FileId)>) -> impl actix_web::Responder {
     let (s_id, f_id) = path.into_inner();
     __metadata((s_id, f_id), state).await
 }
