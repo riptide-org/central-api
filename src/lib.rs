@@ -14,47 +14,46 @@
     deprecated
 )]
 
-//TODO: if a request is present for more than 50 seconds, time it out and return an error - they shouldn't hang around in the
-// state.
-
-//TODO: remove unauthenticated agents after 5 minutes
-
 //TODO: update the last_seen timer whenever an agent authenticates.
 //TODO: force agents to reauthenticate periodically
 //TODO: expand configuration to cover all attached variables, in a separate module and pass that throughout the application
 //TODO: refactor return types into a global constant for the entire application
 //TODO: relevant to above, refactor the metadata/status response generation from websockets into download/info
-//TODO: refactor the integration tests in websockets.rs into a file in tests/integration.rs
-//TODO: add more unit tests generally speaking, and add integration tests for information endpoints, and metadata
 //TODO: add test to ensure that the agent is removed from the state when it disconnects
-//TODO: write tests to cover error states
-//TODO: refactor the openapi.oas.yml file to reduce duplication
+//TODO: refactor the `openapi.oas.yml` file to reduce duplication
 //TODO: update /info endpoints to return more information on individual nodes (include data on whether they're authenticated or not)
 //TODO: allow some users to optionally cache the metadata/status response for a period of time, to reduce the number of requests
 //TODO: allow some users to optionally cache the file upload itself for a period of time (e.g. 5 minutes), to reduce the number of requests
 //TODO: add size/item limits for both of the above
 //TODO: add rate limiting for all endpoints - can be implemented as middleware
+//TODO; kick a server that's not responding to pings off
+//TODO: configurable ping rate
 
 #[macro_use]
 extern crate diesel;
 
-mod db;
-mod endpoints;
-mod error;
-mod models;
+pub mod config;
+pub mod db;
+pub mod endpoints;
+pub mod error;
+pub mod models;
 #[cfg(not(tarpaulin_include))]
-mod schema;
+pub mod schema;
+pub mod timelocked_hashmap;
+pub mod util;
 
 use actix_web::{
     error::PayloadError,
     middleware::Logger,
-    web::{self, Bytes},
+    web::{Bytes, Data},
     App, HttpServer,
 };
+use config::Config;
 use db::{Database, DbBackend};
-use dotenv::dotenv;
 use endpoints::websockets::InternalComm as WsInternalComm;
+use log::info;
 use std::collections::HashMap;
+use timelocked_hashmap::TimedHashMap;
 use tokio::sync::{mpsc, RwLock};
 use ws_com_framework::PublicId as ServerId;
 
@@ -64,47 +63,30 @@ type RequestId = u64;
 #[derive(Debug)]
 pub struct State {
     /// Websockets that are connected, but have not yet completed authentication
-    unauthenticated_servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
+    pub unauthenticated_servers: RwLock<TimedHashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
     /// Connected websockets that are valid, and have responded to a ping within the last X seconds
-    servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
+    pub servers: RwLock<HashMap<ServerId, mpsc::Sender<WsInternalComm>>>,
     /// Actively waiting requests that need an agent to respond - that also haven't timed out yet
-    requests: RwLock<HashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,
+    pub requests: RwLock<TimedHashMap<RequestId, mpsc::Sender<Result<Bytes, PayloadError>>>>,
     /// The base URL of this server
-    base_url: String,
+    pub base_url: String,
     /// The instant that the server started
-    start_time: std::time::Instant,
+    pub start_time: std::time::Instant,
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    pretty_env_logger::init();
-
-    // load .env file, and all parameters
-    dotenv().ok();
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let domain = std::env::var("DOMAIN").expect("DOMAIN must be set");
-    let port = std::env::var("PORT")
-        .expect("PORT must be set")
-        .parse()
-        .expect("PORT must be a number");
-    let host = std::env::var("HOST").expect("HOST must be set");
-
-    // initalise system default state and database
-    let state = web::Data::new(State {
-        unauthenticated_servers: Default::default(),
-        servers: Default::default(),
-        requests: RwLock::new(HashMap::new()),
-        base_url: domain,
-        start_time: std::time::Instant::now(),
-    });
-    let database = web::Data::new(
-        Database::new(db_url)
+#[doc(hidden)]
+pub async fn start(config: Config, state: Data<State>) -> Result<(), Box<dyn std::error::Error>> {
+    let database = Data::new(
+        Database::new(config.db_url)
             .await
             .expect("a valid database connection"),
     );
 
+    // start a monitoring task to remove expired entries from the state
+    let watcher_handle = util::start_watcher(state.clone(), config.auth_timeout_seconds);
+
     // begin listening for connections
-    HttpServer::new(move || {
+    let mut server_handle = HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
             .app_data(database.clone())
@@ -115,7 +97,34 @@ async fn main() -> std::io::Result<()> {
             .configure(endpoints::download::configure)
             .wrap(Logger::default())
     })
-    .bind((host, port))?
-    .run()
-    .await
+    .listen(config.listener)?
+    .run();
+
+    // pin values in place for validity over many loops
+    let mut watcher_handle = Box::pin(watcher_handle);
+
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received SIGINT, shutting down");
+                break;
+            }
+
+            _ = &mut watcher_handle => {
+                info!("Watcher task has exited, shutting down");
+                break;
+            }
+
+            _ = &mut server_handle => {
+                info!("Server task has exited, shutting down");
+                break;
+            }
+        }
+    }
+
+    watcher_handle.abort();
+
+    Ok(())
 }

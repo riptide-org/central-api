@@ -1,3 +1,5 @@
+//! Handles the information/data acquisition side of the API
+
 use actix_web::{
     get,
     web::{self, Path},
