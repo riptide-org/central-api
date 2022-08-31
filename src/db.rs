@@ -53,6 +53,9 @@ pub trait DbBackend {
     /// `contains_entry` will validate whether the provided `ServerId` exists in the database
     async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError>;
 
+    /// `update_last_seen` will update the last seen time for the provided `ServerId`
+    async fn update_last_seen(&self, server_id: &ServerId) -> Result<(), DbBackendError>;
+
     /// `close` will attempt to destroy this connection to the database
     async fn close(self) -> Result<(), DbBackendError>;
 }
@@ -209,6 +212,32 @@ impl DbBackend for Database {
         Ok(users != 0)
     }
 
+    async fn update_last_seen(&self, server_id: &ServerId) -> Result<(), DbBackendError> {
+        use crate::schema::agents::dsl::*;
+
+        let mut conn = self
+            .0
+            .get()
+            .map_err(|e| DbBackendError::NoConnectionAvailable(e.to_string()))?;
+        let server_id: i64 = *server_id as i64;
+
+        web::block(move || {
+            diesel::update(agents.filter(public_id.eq(server_id)))
+                .set(
+                    last_seen.eq(std::time::SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("time went backwards")
+                        .as_secs() as i64),
+                )
+                .execute(&mut conn)
+        })
+        .await
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?
+        .map_err(|e| DbBackendError::QueryFailed(e.to_string()))?;
+
+        Ok(())
+    }
+
     async fn close(self) -> Result<(), DbBackendError> {
         Ok(())
     }
@@ -238,6 +267,10 @@ impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
 
     async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
         self.deref().contains_entry(server_id).await
+    }
+
+    async fn update_last_seen(&self, server_id: &ServerId) -> Result<(), DbBackendError> {
+        self.deref().update_last_seen(server_id).await
     }
 
     async fn close(self) -> Result<(), DbBackendError> {
@@ -275,6 +308,10 @@ impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
 
     async fn contains_entry(&self, server_id: &ServerId) -> Result<bool, DbBackendError> {
         self.deref().contains_entry(server_id).await
+    }
+
+    async fn update_last_seen(&self, server_id: &ServerId) -> Result<(), DbBackendError> {
+        self.deref().update_last_seen(server_id).await
     }
 
     async fn close(self) -> Result<(), DbBackendError> {
@@ -368,6 +405,10 @@ pub mod tests {
                 Some(_) => Ok(true),
                 None => Ok(false),
             }
+        }
+
+        async fn update_last_seen(&self, _: &ServerId) -> Result<(), DbBackendError> {
+            Ok(())
         }
 
         async fn close(self) -> Result<(), DbBackendError> {

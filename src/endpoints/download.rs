@@ -12,7 +12,7 @@ use rand::Rng;
 use tokio::sync::mpsc;
 use ws_com_framework::{error::ErrorKind, FileId, Message};
 
-use crate::{endpoints::websockets::InternalComm, ServerId, State};
+use crate::{config::Config, endpoints::websockets::InternalComm, ServerId, State};
 
 /// configure the download and metadata services
 pub fn configure(cfg: &mut web::ServiceConfig) {
@@ -76,7 +76,11 @@ async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
 }
 
 /// Download a file from a client
-async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpResponse {
+async fn __download(
+    path: (ServerId, FileId),
+    state: Data<State>,
+    config: Data<Config>,
+) -> HttpResponse {
     let (server_id, file_id) = path;
     trace!("download request received for {}, {}", server_id, file_id);
 
@@ -97,8 +101,8 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
     }
 
     trace!("server `{:?}` is online", &server_id);
-    let (tx, mut rx) = mpsc::channel(100);
 
+    let (tx, mut rx) = mpsc::channel(100);
     let download_id = rand::thread_rng().gen();
 
     trace!("download id is {:?}", download_id);
@@ -130,8 +134,8 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
 
     // wait for the first message on rx
     let initial_payload = match tokio::time::timeout(
-        Duration::from_secs(5),
-        /* TODO: configurable timeout here */ rx.recv(),
+        Duration::from_secs(config.request_timeout_seconds),
+        rx.recv(),
     )
     .await
     {
@@ -181,9 +185,13 @@ async fn __download(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
 
 /// Download a file from a client
 #[get("/agents/{server_id}/files/{file_id}")]
-async fn download(state: Data<State>, path: Path<(ServerId, FileId)>) -> impl actix_web::Responder {
+async fn download(
+    state: Data<State>,
+    config: Data<Config>,
+    path: Path<(ServerId, FileId)>,
+) -> impl actix_web::Responder {
     let (s_id, f_id) = path.into_inner();
-    __download((s_id, f_id), state).await
+    __download((s_id, f_id), state, config).await
 }
 
 #[get("/agents/{server_id}/files/{file_id}/metadata")]
@@ -195,12 +203,21 @@ async fn metadata(state: Data<State>, path: Path<(ServerId, FileId)>) -> impl ac
 #[cfg(test)]
 #[cfg(not(tarpaulin_include))]
 mod test {
-    use actix_web::{body::MessageBody, http::StatusCode, web};
+    use std::net::TcpListener;
+
+    use actix_web::{
+        body::MessageBody,
+        http::StatusCode,
+        web::{self, Data},
+    };
     use futures::future;
     use tokio::{pin, sync::RwLock};
     use ws_com_framework::Message;
 
-    use crate::{endpoints::websockets::InternalComm, timelocked_hashmap::TimedHashMap, State};
+    use crate::{
+        config::Config, endpoints::websockets::InternalComm, timelocked_hashmap::TimedHashMap,
+        State,
+    };
 
     use super::{__download, __metadata};
 
@@ -248,7 +265,17 @@ mod test {
             }
         });
 
-        let resp = __download((server_id, file_id), state.clone()).await;
+        let config = Config {
+            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+            db_url: String::from("n/a"),
+            base_url: String::from("n/a"),
+            auth_timeout_seconds: 5,
+            request_timeout_seconds: 5,
+            ping_interval: 5,
+        };
+        let config = Data::new(config);
+
+        let resp = __download((server_id, file_id), state.clone(), config).await;
 
         handle.await.unwrap();
 
@@ -283,7 +310,17 @@ mod test {
             start_time: std::time::Instant::now(),
         });
 
-        let resp = __download((server_id, file_id), state.clone()).await;
+        let config = Config {
+            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+            db_url: String::from("n/a"),
+            base_url: String::from("n/a"),
+            auth_timeout_seconds: 5,
+            request_timeout_seconds: 5,
+            ping_interval: 5,
+        };
+        let config = Data::new(config);
+
+        let resp = __download((server_id, file_id), state.clone(), config).await;
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 

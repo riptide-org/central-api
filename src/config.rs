@@ -20,6 +20,8 @@ pub struct Config {
     pub auth_timeout_seconds: u64,
     /// Time before an authentication request will timeout and return a failure for a request (in seconds)
     pub request_timeout_seconds: u64,
+    /// Number of seconds between pings to a server
+    pub ping_interval: u64,
 }
 
 impl Config {
@@ -52,6 +54,10 @@ impl Config {
                 .map_err(|_| "AUTH_TIMEOUT must be set")?
                 .parse()
                 .map_err(|_| "AUTH_TIMEOUT must be 64-bit integer")?,
+            ping_interval: env::var("PING_INTERVAL")
+                .map_err(|_| "PING_INTERVAL must be set")?
+                .parse()
+                .map_err(|_| "PING_INTERVAL must be 64-bit integer")?,
         })
     }
 }
