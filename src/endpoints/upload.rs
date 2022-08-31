@@ -20,7 +20,13 @@ where
 {
     //Get uploadee channel
     let mut sender_store = state.requests.write().await;
-    let sender = sender_store.remove(&upload_id).unwrap();
+    let sender = sender_store.remove(&upload_id);
+
+    //If the upload id is not valid, return an error
+    if sender.is_none() {
+        return HttpResponse::NotFound().body("Invalid upload id");
+    }
+    let sender = sender.unwrap();
 
     //XXX timeout?
     while let Some(chk) = payload.next().await {
@@ -54,14 +60,13 @@ mod test {
     };
     use futures::Stream;
     use std::{
-        collections::HashMap,
         pin::Pin,
         task::{Context, Poll},
     };
     use tokio::sync::RwLock;
 
     use super::__upload;
-    use crate::State;
+    use crate::{timelocked_hashmap::TimedHashMap, State};
 
     struct MockStreamer<'a>(&'a [u8], bool);
 
@@ -84,9 +89,9 @@ mod test {
         let payload_msg = b"a long set of data";
 
         let state = web::Data::new(State {
-            unauthenticated_servers: Default::default(),
+            unauthenticated_servers: RwLock::new(TimedHashMap::new()),
             servers: Default::default(),
-            requests: RwLock::new(HashMap::new()),
+            requests: RwLock::new(TimedHashMap::new()),
             base_url: "https://localhost:8080".into(),
             start_time: std::time::Instant::now(),
         });

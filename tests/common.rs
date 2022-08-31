@@ -1,20 +1,20 @@
 #![cfg(not(tarpaulin_include))]
 
-use std::{collections::HashMap, sync::Once, task::Poll, thread::JoinHandle};
+use std::{sync::Once, task::Poll, thread::JoinHandle};
 
 use actix_web::{
     error::PayloadError,
-    middleware::Logger,
     web::{Bytes, Data},
-    App, HttpServer,
 };
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot, RwLock};
 
-use central_api::{
+use central_api_lib::{
+    config::Config,
     db::{Database, DbBackend},
-    endpoints, State,
+    timelocked_hashmap::TimedHashMap,
+    State,
 };
 
 static INIT: Once = Once::new();
@@ -68,38 +68,37 @@ pub async fn create_server(
     oneshot::Sender<()>,
 ) {
     let state = Data::new(State {
-        unauthenticated_servers: Default::default(),
+        unauthenticated_servers: RwLock::new(TimedHashMap::new()),
         servers: Default::default(),
-        requests: RwLock::new(HashMap::new()),
+        requests: RwLock::new(TimedHashMap::new()),
         base_url: "https://localhost:8080".into(),
         start_time: std::time::Instant::now(),
     });
 
     let db = Data::new(
-        Database::new(database_url)
+        Database::new(database_url.clone())
             .await
             .expect("a valid database connection"),
     );
 
-    let server_db = db.clone();
-    let server_state = state.clone();
+    // let server_db = db.clone();
+    // let server_state = state.clone();
     let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+    let server_state = state.clone();
+    let server_db = db.clone();
     let handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut server = HttpServer::new(move || {
-            App::new()
-                .app_data(server_db.clone())
-                .app_data(server_state.clone())
-                .service(endpoints::auth::register)
-                .service(endpoints::upload::upload)
-                .service(endpoints::websockets::websocket)
-                .configure(endpoints::info::configure)
-                .configure(endpoints::download::configure)
-                .wrap(Logger::default())
-        })
-        .listen(port)
-        .unwrap()
-        .run();
+        let rt = actix_web::rt::System::new();
+
+        let config: Config = Config {
+            listener: port,
+            db_url: database_url,
+            base_url: "https://localhost:8080".into(),
+            auth_timeout_seconds: 3,
+            request_timeout_seconds: 3,
+        };
+
+        let mut server = Box::pin(central_api_lib::start(config, server_state));
+
         rt.block_on(async move {
             loop {
                 tokio::select! {
@@ -112,6 +111,8 @@ pub async fn create_server(
                     }
                 }
             }
+
+            server_db.close().await.unwrap();
         });
     });
 

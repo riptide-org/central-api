@@ -164,7 +164,7 @@ where
     fn ping_pong(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
         ctx.run_interval(Duration::from_secs(20), |act, c| {
             c.ping(&act.pinger.to_be_bytes());
-            act.pinger += 1;
+            act.pinger += 1; //TODO; check recieved in order
         });
     }
 }

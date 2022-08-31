@@ -170,7 +170,7 @@ async fn test_websocket_auth_double_login() {
         tungstenite::Error::Http(e) => {
             assert_eq!(e.status(), 403);
 
-            let body: String = e.into_body().expect("body attached to response");
+            let body: String = String::from_utf8(e.into_body()).unwrap();
             assert!(body.contains("already authenticated with this id"));
         }
         m => panic!("expected http error: `{:?}`", m),

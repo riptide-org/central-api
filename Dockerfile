@@ -23,7 +23,7 @@ RUN cargo build --release
 # We do not need the Rust toolchain to run the binary!
 FROM debian:bullseye-slim AS runtime
 WORKDIR /app
-COPY --from=builder /app/target/release/central-api /app/
+COPY --from=builder /app/target/release/central_api /app/
 COPY --from=builder /app/migrations /app/migrations
 
 ENV HOST 0.0.0.0

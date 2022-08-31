@@ -2,7 +2,7 @@
 
 mod common;
 
-use central_api::db::DbBackend;
+use central_api_lib::db::DbBackend;
 use common::{create_server, find_open_port, init_logger, AuthToken};
 use log::error;
 use ntest::timeout;

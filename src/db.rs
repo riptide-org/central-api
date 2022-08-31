@@ -31,7 +31,7 @@ type DbPool = Pool<ConnectionManager<SqliteConnection>>;
 #[async_trait]
 pub trait DbBackend {
     /// `new` will attempt
-    async fn new(database_url: String) -> Result<Self, DbBackendError>
+    async fn new<S: Into<String> + Send>(database_url: S) -> Result<Self, DbBackendError>
     where
         Self: Sized;
 
@@ -95,10 +95,10 @@ impl DerefMut for Database {
 
 #[async_trait]
 impl DbBackend for Database {
-    async fn new(database_url: String) -> Result<Self, DbBackendError> {
+    async fn new<S: Into<String> + Send>(database_url: S) -> Result<Self, DbBackendError> {
         let db = Self(
             Pool::builder()
-                .build(ConnectionManager::<SqliteConnection>::new(&database_url))
+                .build(ConnectionManager::<SqliteConnection>::new(database_url))
                 .map_err(|e| DbBackendError::InitFailed(e.to_string()))?,
         );
         db.init().await?;
@@ -216,7 +216,7 @@ impl DbBackend for Database {
 
 #[async_trait]
 impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
-    async fn new(database_url: String) -> Result<Data<T>, DbBackendError> {
+    async fn new<S: Into<String> + Send>(database_url: S) -> Result<Data<T>, DbBackendError> {
         Ok(Data::new(T::new(database_url).await?))
     }
 
@@ -253,7 +253,7 @@ impl<T: DbBackend + Send + Sync> DbBackend for Data<T> {
 
 #[async_trait]
 impl<T: DbBackend + Send + Sync> DbBackend for Arc<T> {
-    async fn new(database_url: String) -> Result<Arc<T>, DbBackendError> {
+    async fn new<S: Into<String> + Send>(database_url: S) -> Result<Arc<T>, DbBackendError> {
         Ok(Arc::new(T::new(database_url).await?))
     }
 
@@ -338,7 +338,7 @@ pub mod tests {
 
     #[async_trait]
     impl DbBackend for MockDb {
-        async fn new(_: String) -> Result<Self, DbBackendError> {
+        async fn new<S: Into<String> + Send>(_: S) -> Result<Self, DbBackendError> {
             Ok(Self {
                 store: Default::default(),
             })
