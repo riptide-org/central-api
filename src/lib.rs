@@ -26,8 +26,6 @@
 //TODO: allow some users to optionally cache the file upload itself for a period of time (e.g. 5 minutes), to reduce the number of requests
 //TODO: add size/item limits for both of the above
 //TODO: add rate limiting for all endpoints - can be implemented as middleware
-//TODO; kick a server that's not responding to pings off
-//TODO: configurable ping rate
 
 #[macro_use]
 extern crate diesel;
@@ -76,8 +74,10 @@ pub struct State {
 
 #[doc(hidden)]
 pub async fn start(config: Config, state: Data<State>) -> Result<(), Box<dyn std::error::Error>> {
+    let config = Data::new(config);
+
     let database = Data::new(
-        Database::new(config.db_url)
+        Database::new(&config.db_url)
             .await
             .expect("a valid database connection"),
     );
@@ -86,10 +86,12 @@ pub async fn start(config: Config, state: Data<State>) -> Result<(), Box<dyn std
     let watcher_handle = util::start_watcher(state.clone(), config.auth_timeout_seconds);
 
     // begin listening for connections
+    let server_config = config.clone();
     let mut server_handle = HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
             .app_data(database.clone())
+            .app_data(server_config.clone())
             .service(endpoints::auth::register)
             .service(endpoints::upload::upload)
             .service(endpoints::websockets::websocket)
@@ -97,7 +99,7 @@ pub async fn start(config: Config, state: Data<State>) -> Result<(), Box<dyn std
             .configure(endpoints::download::configure)
             .wrap(Logger::default())
     })
-    .listen(config.listener)?
+    .listen(config.listener.try_clone().unwrap())?
     .run();
 
     // pin values in place for validity over many loops

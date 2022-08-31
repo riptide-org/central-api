@@ -6,7 +6,7 @@ use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{
     error::PayloadError,
     get,
-    web::{self, Bytes},
+    web::{self, Bytes, Data},
     HttpRequest, HttpResponse, Responder,
 };
 use actix_web_actors::ws::{self, CloseCode, CloseReason};
@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use ws_com_framework::{error::ErrorKind, Message};
 
 use crate::{
+    config::Config,
     db::{Database, DbBackend},
     ServerId, State,
 };
@@ -61,7 +62,9 @@ where
     /// the receive end of an internal message queue for various communications
     internal_rx: mpsc::Receiver<InternalComm>,
     /// a pointer to the current state
-    state: actix_web::web::Data<State>,
+    state: Data<State>,
+    /// a pointer to the current config
+    config: Data<Config>,
     /// the id of this server
     id: ServerId,
     /// a pointer to the database connection
@@ -139,7 +142,10 @@ where
                     act.authentication = Authentication::Authenticated
                 }
                 Ok(InternalComm::CloseConnection) => close_connection!(),
-                Ok(InternalComm::ShutDownComplete) => act.ws_state = WsState::Stopped,
+                Ok(InternalComm::ShutDownComplete) => {
+                    act.ws_state = WsState::Stopped;
+                    // act.finished(c)
+                }
                 Ok(InternalComm::SendMessage(msg)) => {
                     trace!("Sending message: {:?}", msg);
                     if let Ok(data) = TryInto::<Vec<u8>>::try_into(msg) {
@@ -162,9 +168,12 @@ where
     }
 
     fn ping_pong(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
-        ctx.run_interval(Duration::from_secs(20), |act, c| {
+        ctx.run_interval(Duration::from_secs(self.config.ping_interval), |act, c| {
+            if matches!(act.ws_state, WsState::Stopped) {
+                return; //Prevent handling of internal messages when stopped
+            }
             c.ping(&act.pinger.to_be_bytes());
-            act.pinger += 1; //TODO; check recieved in order
+            act.pinger += 1; //TODO; check received in order
         });
     }
 }
@@ -339,10 +348,22 @@ where
                 ctx.write_raw(ws::Message::Pong(msg));
             }
             Ok(ws::Message::Pong(pong)) => {
-                trace!("received pong message from peer");
+                trace!("Got pong from peer: {:?}", pong);
                 if pong.as_ref() != (self.pinger - 1).to_be_bytes() {
                     //pong failed
-                    error!("peer send pong response too slowly");
+                    trace!("peer send pong response too slowly");
+
+                    let error: Vec<u8> = Message::Error {
+                        kind: ErrorKind::Unknown,
+                        reason: Some(String::from("failed to respond to ping")),
+                    }
+                    .try_into()
+                    .expect("valid bytes");
+                    ctx.binary(error);
+                    ctx.close(Some(CloseReason {
+                        code: CloseCode::Protocol,
+                        description: Some(String::from("failed to respond to ping")),
+                    }));
                     self.finished(ctx);
                 }
             }
@@ -367,7 +388,8 @@ where
 async fn __websocket<E, T>(
     req: HttpRequest,
     stream: T,
-    state: web::Data<State>,
+    state: Data<State>,
+    config: Data<Config>,
     database: E,
     server_id: ServerId,
 ) -> Result<HttpResponse, actix_web::Error>
@@ -404,6 +426,7 @@ where
             pinger: 0,
             internal_tx: tx,
             internal_rx: rx,
+            config,
         },
         &req,
         stream,
@@ -414,10 +437,11 @@ where
 pub async fn websocket(
     req: HttpRequest,
     stream: web::Payload,
-    state: web::Data<State>,
-    database: web::Data<Database>,
+    state: Data<State>,
+    config: Data<Config>,
+    database: Data<Database>,
     path: web::Path<ServerId>,
 ) -> impl Responder {
     let server_id = path.into_inner();
-    __websocket(req, stream, state, database, server_id).await
+    __websocket(req, stream, state, config, database, server_id).await
 }

@@ -53,7 +53,13 @@ async fn test_old_unauth_servers_removed() {
     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 
     // validate that the websocket has closed
-    let msg = socket.read_message().unwrap();
+    let mut msg = socket.read_message().unwrap();
+
+    //skip non-ping messages
+    if msg.is_ping() {
+        msg = socket.read_message().unwrap();
+    }
+
     assert!(msg.is_close());
 
     // validate that we are no longer in the state as unauthenticated
