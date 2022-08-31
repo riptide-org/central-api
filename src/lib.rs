@@ -14,18 +14,22 @@
     deprecated
 )]
 
-//TODO: update the last_seen timer whenever an agent authenticates.
-//TODO: force agents to reauthenticate periodically
-//TODO: expand configuration to cover all attached variables, in a separate module and pass that throughout the application
-//TODO: refactor return types into a global constant for the entire application
-//TODO: relevant to above, refactor the metadata/status response generation from websockets into download/info
-//TODO: add test to ensure that the agent is removed from the state when it disconnects
-//TODO: refactor the `openapi.oas.yml` file to reduce duplication
+///////// Endpoints/Features /////////
 //TODO: update /info endpoints to return more information on individual nodes (include data on whether they're authenticated or not)
+//TODO: add rate limiting for all endpoints - can be implemented as middleware
+
+///////// Stretch Goals /////////
 //TODO: allow some users to optionally cache the metadata/status response for a period of time, to reduce the number of requests
 //TODO: allow some users to optionally cache the file upload itself for a period of time (e.g. 5 minutes), to reduce the number of requests
 //TODO: add size/item limits for both of the above
-//TODO: add rate limiting for all endpoints - can be implemented as middleware
+
+///////// Refactoring /////////
+//TODO: refactor return types into a global constant for the entire application
+//TODO: relevant to above, refactor the metadata/status response generation from websockets into download/info
+//XXX: refactor the `openapi.oas.yml` file to reduce duplication
+
+///////// Testing /////////
+//TODO: add test to ensure that the agent is removed from the state when it disconnects
 
 #[macro_use]
 extern crate diesel;
@@ -40,6 +44,10 @@ pub mod schema;
 pub mod timelocked_hashmap;
 pub mod util;
 
+use actix_extensible_rate_limit::{
+    backend::{memory::InMemoryBackend, SimpleInputFunctionBuilder},
+    RateLimiter,
+};
 use actix_web::{
     error::PayloadError,
     middleware::Logger,
@@ -50,7 +58,7 @@ use config::Config;
 use db::{Database, DbBackend};
 use endpoints::websockets::InternalComm as WsInternalComm;
 use log::info;
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 use timelocked_hashmap::TimedHashMap;
 use tokio::sync::{mpsc, RwLock};
 use ws_com_framework::PublicId as ServerId;
@@ -88,6 +96,14 @@ pub async fn start(config: Config, state: Data<State>) -> Result<(), Box<dyn std
     // begin listening for connections
     let server_config = config.clone();
     let mut server_handle = HttpServer::new(move || {
+        // create a simple ratelimiter
+        let ratelimiter_backend = InMemoryBackend::builder().build();
+        let ratelimiter_input = SimpleInputFunctionBuilder::new(Duration::from_secs(60), 10)
+            .real_ip_key()
+            .build();
+        let ratelimiter_middleware =
+            RateLimiter::builder(ratelimiter_backend, ratelimiter_input).build();
+
         App::new()
             .app_data(state.clone())
             .app_data(database.clone())
@@ -97,6 +113,7 @@ pub async fn start(config: Config, state: Data<State>) -> Result<(), Box<dyn std
             .service(endpoints::websockets::websocket)
             .configure(endpoints::info::configure)
             .configure(endpoints::download::configure)
+            .wrap(ratelimiter_middleware)
             .wrap(Logger::default())
     })
     .listen(config.listener.try_clone().unwrap())?

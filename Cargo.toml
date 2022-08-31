@@ -23,6 +23,7 @@ linked-hash-map = "0.5.6"
 actix = "0.13.0"
 actix-web = "4"
 actix-web-actors = "4"
+actix-extensible-rate-limit = "0.2.1"
 
 # Database crates
 rand = "0.8.5"

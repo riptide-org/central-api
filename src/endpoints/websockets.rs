@@ -366,6 +366,23 @@ where
                     }));
                     self.finished(ctx);
                 }
+
+                //every 10 pings, update last seen //XXX: test
+                if self.pinger % 10 == 0 {
+                    let database = self.database.clone();
+                    let id = self.id;
+                    let fut = async move {
+                        if let Err(e) = database.update_last_seen(&id).await {
+                            error!(
+                                "failed to update last seen for peer {} due to error: {}",
+                                id, e
+                            );
+                        }
+                    };
+
+                    let fut = actix::fut::wrap_future::<_, Self>(fut);
+                    ctx.spawn(fut);
+                }
             }
             Ok(ws::Message::Close(reason)) => {
                 info!("peer closing {reason:?}");
