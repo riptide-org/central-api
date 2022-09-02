@@ -61,7 +61,7 @@ async fn __metadata(path: (ServerId, FileId), state: Data<State>) -> HttpRespons
 
         //create a streaming response
         HttpResponse::Ok()
-            .content_type("application/octet-stream")
+            .content_type("application/json")
             .streaming(payload)
     } else {
         trace!(
@@ -175,11 +175,10 @@ async fn __download(
         }
     };
 
-    //XXX: investigate insertion of a Content-Disposition header: https://stackoverflow.com/questions/386845/http-headers-for-file-downloads
-
     //create a streaming response
     HttpResponse::Ok()
         .content_type("application/octet-stream")
+        // .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename))) //TODO, requires a filename by collecting metadata from the server
         .streaming(payload)
 }
 
