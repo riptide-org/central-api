@@ -7,7 +7,9 @@ coverage:
       default:
         target: 60%
         threshold: 5%
+        informational: true
     project:
       default:
         target: 60%
         threshold: 5%
+        informational: true
