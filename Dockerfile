@@ -26,9 +26,13 @@ WORKDIR /app
 COPY --from=builder /app/target/release/central_api /app/
 COPY --from=builder /app/migrations /app/migrations
 
+RUN apt-get update
+RUN apt-get upgrade -y
+RUN apt-get install -y sqlite3
+
 ENV HOST 0.0.0.0
 ENV PORT 3000
 
 EXPOSE 3000
 
-CMD [ "/app/central-api" ]
+CMD [ "/app/central_api" ]
