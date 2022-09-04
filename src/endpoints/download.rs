@@ -140,6 +140,12 @@ async fn __download(
     .await
     {
         Ok(Some(p)) => p,
+        Ok(None) => {
+            // return error to client
+            return HttpResponse::NotFound()
+                .content_type("plain/text")
+                .body("requested resource not found");
+        }
         _ => {
             // remove request from server
             if state.requests.write().await.remove(&download_id).is_none() {
