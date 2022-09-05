@@ -207,7 +207,7 @@ paths:
           description: The id of the file to download from the agent.
       responses:
         '200':
-          description: File is available, and request for metadat was successful.
+          description: File is available, and request for metadata was successful.
           content:
             application/json:
               schema:
