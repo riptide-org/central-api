@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use actix_web::{
+    body::SizedStream,
     get,
     web::{self, Data, Path},
     HttpResponse,
@@ -13,6 +14,9 @@ use tokio::sync::mpsc;
 use ws_com_framework::{error::ErrorKind, FileId, Message};
 
 use crate::{config::Config, endpoints::websockets::InternalComm, ServerId, State};
+
+//TODO: lot of duplicate code in the __download and __metadata functions, both internally and between them.
+// needs refactoring
 
 /// configure the download and metadata services
 pub fn configure(cfg: &mut web::ServiceConfig) {
@@ -102,6 +106,75 @@ async fn __download(
 
     trace!("server `{:?}` is online", &server_id);
 
+    // create metadata request
+    let (meta_tx, mut meta_rx) = mpsc::channel(100);
+    let meta_id = rand::thread_rng().gen();
+    state.requests.write().await.insert(meta_id, meta_tx);
+
+    //Acquire channel to WS, and send upload req. to server
+    trace!("uploading req to server");
+    let connected_servers = state.servers.read().await;
+    let uploader_ws = connected_servers.get(&server_id).unwrap(); //Duplicate req #cd
+    uploader_ws
+        .send(InternalComm::SendMessage(Message::MetadataReq {
+            file_id,
+            upload_id: meta_id,
+        }))
+        .await
+        .unwrap();
+
+    let mut raw_metadata = match tokio::time::timeout(
+        Duration::from_secs(config.request_timeout_seconds),
+        meta_rx.recv(),
+    )
+    .await
+    {
+        Ok(Some(Ok(p))) => p.to_vec(),
+        Ok(None) => {
+            warn!("metadata request closed early...");
+            // return error to client
+            return HttpResponse::NotFound()
+                .content_type("plain/text")
+                .body("requested resource not found");
+        }
+        _ => {
+            // remove request from server
+            if state.requests.write().await.remove(&meta_id).is_none() {
+                warn!("Tried to remove request that was no longer there due to timing out, but it wasn't there at all?!");
+            };
+
+            // send error to agent
+            if let Err(e) = uploader_ws
+                .send(InternalComm::SendMessage(Message::Error {
+                    kind: ErrorKind::FailedFileUpload,
+                    reason: Some(String::from("failed to upload in time")),
+                }))
+                .await
+            {
+                error!(
+                    "failed to send failed upload error response to client {:?}, error: {}",
+                    server_id, e
+                );
+            }
+
+            // return error to client
+            return HttpResponse::NotFound()
+                .content_type("plain/text")
+                .body("requested resource not found, the server may not be connected");
+        }
+    };
+
+    // wait for metadata
+    while let Some(Ok(v)) = meta_rx.recv().await {
+        raw_metadata.extend_from_slice(&v);
+    }
+
+    // parse metadata //TODO: instead of using serde_json here - we should define a global struct
+    // which we can use to parse/unparse the data
+    let raw_metadata: serde_json::Value = serde_json::from_slice(&raw_metadata).unwrap();
+    let file_name = raw_metadata["file_name"].as_str().unwrap();
+    let file_size = raw_metadata["file_size"].as_u64().unwrap();
+
     let (tx, mut rx) = mpsc::channel(100);
     let download_id = rand::thread_rng().gen();
 
@@ -181,11 +254,16 @@ async fn __download(
         }
     };
 
+    let sized_stream = SizedStream::new(file_size, payload);
+
     //create a streaming response
     HttpResponse::Ok()
         .content_type("application/octet-stream")
-        // .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename))) //TODO, requires a filename by collecting metadata from the server
-        .streaming(payload)
+        .insert_header((
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", file_name),
+        ))
+        .body(sized_stream)
 }
 
 /// Download a file from a client
@@ -203,235 +281,4 @@ async fn download(
 async fn metadata(state: Data<State>, path: Path<(ServerId, FileId)>) -> impl actix_web::Responder {
     let (s_id, f_id) = path.into_inner();
     __metadata((s_id, f_id), state).await
-}
-
-#[cfg(test)]
-#[cfg(not(tarpaulin_include))]
-mod test {
-    use std::net::TcpListener;
-
-    use actix_web::{
-        body::MessageBody,
-        http::StatusCode,
-        web::{self, Data},
-    };
-    use futures::future;
-    use tokio::{pin, sync::RwLock};
-    use ws_com_framework::Message;
-
-    use crate::{
-        config::Config, endpoints::websockets::InternalComm, timelocked_hashmap::TimedHashMap,
-        State,
-    };
-
-    use super::{__download, __metadata};
-
-    /// Test downloading a file
-    #[tokio::test]
-    async fn test_download() {
-        let server_id = 45;
-        let file_id = 34;
-
-        let state = web::Data::new(State {
-            unauthenticated_servers: RwLock::new(TimedHashMap::new()),
-            servers: Default::default(),
-            requests: RwLock::new(TimedHashMap::new()),
-            base_url: "https://localhost:8080".into(),
-            start_time: std::time::Instant::now(),
-        });
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-
-        state.servers.write().await.insert(server_id, tx);
-
-        let task_state = state.clone();
-        let handle = tokio::task::spawn(async move {
-            if let Some(InternalComm::SendMessage(Message::UploadTo {
-                file_id: recv_file_id,
-                upload_url: recv_upload_url,
-            })) = rx.recv().await
-            {
-                //Validate that the url contains the upload_id somewhere
-                let requests = task_state.requests.read().await;
-                let upload_id = requests.keys().next().unwrap();
-                let sender = requests.values().next().unwrap();
-
-                assert_eq!(recv_file_id, file_id);
-                assert!(recv_upload_url.contains(&format!("{upload_id}")));
-
-                sender
-                    .send(Ok(actix_web::web::Bytes::copy_from_slice(
-                        b"some test data",
-                    )))
-                    .await
-                    .unwrap();
-            } else {
-                panic!("sent no message, or wrong message");
-            }
-        });
-
-        let config = Config {
-            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
-            db_url: String::from("n/a"),
-            base_url: String::from("n/a"),
-            auth_timeout_seconds: 5,
-            request_timeout_seconds: 5,
-            ping_interval: 5,
-        };
-        let config = Data::new(config);
-
-        let resp = __download((server_id, file_id), state.clone(), config).await;
-
-        handle.await.unwrap();
-
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        assert_eq!(
-            resp.headers().get("Content-Type").unwrap(),
-            "application/octet-stream"
-        );
-
-        let body = resp.into_body();
-        pin!(body);
-
-        let bytes = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
-        assert_eq!(
-            bytes.unwrap().unwrap(),
-            web::Bytes::from_static(b"some test data")
-        );
-    }
-
-    /// Test downloading a file without a server connected
-    #[tokio::test]
-    async fn test_download_disconnected() {
-        let server_id = 45;
-        let file_id = 34;
-
-        let state = web::Data::new(State {
-            unauthenticated_servers: RwLock::new(TimedHashMap::new()),
-            servers: Default::default(),
-            requests: RwLock::new(TimedHashMap::new()),
-            base_url: "https://localhost:8080".into(),
-            start_time: std::time::Instant::now(),
-        });
-
-        let config = Config {
-            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
-            db_url: String::from("n/a"),
-            base_url: String::from("n/a"),
-            auth_timeout_seconds: 5,
-            request_timeout_seconds: 5,
-            ping_interval: 5,
-        };
-        let config = Data::new(config);
-
-        let resp = __download((server_id, file_id), state.clone(), config).await;
-
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-
-        assert_eq!(resp.headers().get("Content-Type").unwrap(), "plain/text");
-
-        let body = resp.into_body();
-        pin!(body);
-
-        let bytes = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
-        assert_eq!(
-            bytes.unwrap().unwrap(),
-            web::Bytes::from_static(
-                b"requested resource not found, the server may not be connected"
-            )
-        );
-    }
-
-    /// Test getting metadata
-    #[tokio::test]
-    async fn test_metadata() {
-        let server_id = 45;
-        let file_id = 34;
-
-        let state = web::Data::new(State {
-            unauthenticated_servers: RwLock::new(TimedHashMap::new()),
-            servers: Default::default(),
-            requests: RwLock::new(TimedHashMap::new()),
-            base_url: "https://localhost:8080".into(),
-            start_time: std::time::Instant::now(),
-        });
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-
-        state.servers.write().await.insert(server_id, tx);
-
-        let task_state = state.clone();
-        let handle = tokio::task::spawn(async move {
-            if let Some(InternalComm::SendMessage(Message::MetadataReq {
-                file_id: recv_file_id,
-                upload_id: recv_upload_id,
-            })) = rx.recv().await
-            {
-                //Validate that the url contains the upload_id somewhere
-                let requests = task_state.requests.read().await;
-                let upload_id = requests.keys().next().unwrap();
-                let sender = requests.values().next().unwrap().clone();
-
-                assert_eq!(recv_file_id, file_id);
-                assert_eq!(recv_upload_id, *upload_id);
-
-                sender
-                    .send(Ok(actix_web::web::Bytes::copy_from_slice(
-                        b"some test data",
-                    )))
-                    .await
-                    .unwrap();
-            } else {
-                panic!("sent no message, or wrong message");
-            }
-        });
-
-        let resp = __metadata((server_id, file_id), state.clone()).await;
-
-        handle.await.unwrap();
-
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = resp.into_body();
-        pin!(body);
-
-        let bytes = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
-        assert_eq!(
-            bytes.unwrap().unwrap(),
-            web::Bytes::from_static(b"some test data")
-        );
-    }
-
-    /// Test getting metadata without a server connected
-    #[tokio::test]
-    async fn test_metadata_disconnected() {
-        let server_id = 45;
-        let file_id = 34;
-
-        let state = web::Data::new(State {
-            unauthenticated_servers: RwLock::new(TimedHashMap::new()),
-            servers: Default::default(),
-            requests: RwLock::new(TimedHashMap::new()),
-            base_url: "https://localhost:8080".into(),
-            start_time: std::time::Instant::now(),
-        });
-
-        let resp = __metadata((server_id, file_id), state.clone()).await;
-
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-
-        assert_eq!(resp.headers().get("Content-Type").unwrap(), "plain/text");
-
-        let body = resp.into_body();
-        pin!(body);
-
-        let bytes = future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
-        assert_eq!(
-            bytes.unwrap().unwrap(),
-            web::Bytes::from_static(
-                b"requested resource not found, the server may not be connected"
-            )
-        );
-    }
 }
