@@ -84,6 +84,46 @@ async fn test_file_download() {
 
     let data: ws_com_framework::Message = msg.into_data().try_into().unwrap();
     match data {
+        ws_com_framework::Message::MetadataReq { file_id, upload_id } => {
+            // send metadata response
+            socket
+                .write_message(Message::Binary(
+                    ws_com_framework::Message::MetadataRes {
+                        file_id,
+                        exp: (std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                        crt: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                        file_size: 12,
+                        username: "test".to_string(),
+                        file_name: "test.txt".to_string(),
+                        upload_id,
+                    }
+                    .try_into()
+                    .unwrap(),
+                ))
+                .unwrap();
+        }
+        m => panic!("expected file req message {:?}", m),
+    }
+
+    let mut msg: Message = socket.read_message().unwrap();
+    while !matches!(msg, Message::Binary(_)) {
+        info!("got message: {:?}", msg);
+        (msg, socket) = tokio::task::spawn_blocking(move || {
+            let msg = socket.read_message().unwrap();
+            (msg, socket)
+        })
+        .await
+        .unwrap();
+    }
+
+    let data: ws_com_framework::Message = msg.into_data().try_into().unwrap();
+    match data {
         ws_com_framework::Message::UploadTo {
             file_id,
             upload_url,
@@ -114,8 +154,20 @@ async fn test_file_download() {
     let got_res = res.await.unwrap();
     assert!(got_res.status().is_success());
 
-    let got_res = got_res.text().await.unwrap();
-    assert_eq!(got_res, "hello, world");
+    // validate that the Content-Disposition header is set
+    let headers = got_res.headers();
+    let content_disposition = headers.get("Content-Disposition").unwrap();
+    assert_eq!(
+        content_disposition.to_str().unwrap(),
+        "attachment; filename=\"test.txt\""
+    );
+
+    let file_size = headers.get("Content-Length").unwrap();
+    assert_eq!(file_size.to_str().unwrap(), "12");
+
+    // validate that the file contents are correct
+    let body = got_res.text().await.unwrap();
+    assert_eq!(body, "hello, world");
 
     //kill the std thread without waiting
     if let Err(e) = tx.send(()) {

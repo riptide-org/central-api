@@ -212,7 +212,20 @@ where
                     match m {
                         Message::Ok => { /* Acknowledgement, do nothing */ }
                         Message::Error { kind, reason } => {
-                            error!("Got error from agent: {:?}, {:?}", kind, reason)
+                            error!("Got error message from peer: {kind:?} {reason:?}");
+                            if matches!(kind, ErrorKind::FileDoesntExist) {
+                                if let Some(id) = reason {
+                                    let state = self.state.clone();
+                                    let id = id.parse::<u64>().expect("valid id");
+                                    let fut = async move {
+                                        state.requests.write().await.remove(&id);
+                                    };
+                                    let fut = actix::fut::wrap_future::<_, Self>(fut);
+                                    ctx.spawn(fut);
+                                }
+                            } else {
+                                error!("Got error from agent: {:?}, {:?}", kind, reason)
+                            }
                         }
                         Message::MetadataRes {
                             file_id,
