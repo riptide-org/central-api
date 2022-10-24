@@ -2,7 +2,7 @@
 
 use actix_web::{
     get,
-    web::{self, Path},
+    web::{self, Data, Path},
     HttpResponse,
 };
 use log::{error, trace};
@@ -11,7 +11,11 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use ws_com_framework::{Message, PublicId};
 
-use crate::{endpoints::websockets::InternalComm, State};
+use crate::{
+    config::Config,
+    endpoints::{util::collect_bytes, websockets::InternalComm},
+    State,
+};
 
 /// configure all information endpoint services
 pub fn configure(cfg: &mut web::ServiceConfig) {
@@ -27,7 +31,7 @@ struct InfoResp<'r> {
 
 /// endpoint which returns information about the api (GET /info)
 #[get("/info")]
-async fn global_info(state: web::Data<State>) -> impl actix_web::Responder {
+async fn global_info(state: Data<State>) -> impl actix_web::Responder {
     web::Json(InfoResp {
         ready: true,
         message: "ready",
@@ -39,9 +43,10 @@ async fn global_info(state: web::Data<State>) -> impl actix_web::Responder {
 /// endpoint which returns information about all a specific agent connected to the api
 #[get("/agents/{agent_id}")]
 async fn agents_info(
-    state: web::Data<State>,
+    state: Data<State>,
     agent_id: Path<PublicId>,
-) -> impl actix_web::Responder {
+    config: Data<Config>,
+) -> HttpResponse {
     let agent_id = agent_id.into_inner();
 
     let reader = state.servers.read().await;
@@ -79,29 +84,35 @@ async fn agents_info(
 
     trace!("generating response payload and returning");
 
-    let mut response: Vec<u8> = Vec::with_capacity(100);
-    while let Some(s) = rx.recv().await {
-        match s {
-            Ok(b) => {
-                response.extend(b.into_iter());
+    let payload = match collect_bytes(
+        &download_id,
+        &mut rx,
+        config.request_timeout_seconds,
+        &state,
+        uploader_ws,
+        &agent_id,
+        Some(2_000_000),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
 
-                // if response size is greater than 2mb, return an error
-                if response.len() > 2_000_000 {
-                    error!("response size is greater than 2mb on request to agent {}, current body is `{}`", agent_id, String::from_utf8_lossy(&response));
-                    // reduce the body to the first 2mb
-                    response.truncate(2_000_000);
-                    break;
-                }
-            }
-            Err(e) => {
-                error!("Error while receiving data from server: {}", e);
-                return HttpResponse::InternalServerError().finish();
-            }
+    let payload: String = match String::from_utf8(payload) {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to convert payload to string: {}", e);
+            return HttpResponse::InternalServerError().json(InfoResp {
+                ready: false,
+                message: "failed to convert payload to string",
+                uptime: 0,
+            });
         }
-    }
+    };
 
-    //create a streaming response
+    //create a response
     HttpResponse::Ok()
         .content_type("application/json")
-        .body(response)
+        .body(payload)
 }

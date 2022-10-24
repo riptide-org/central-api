@@ -134,7 +134,7 @@ async fn test_old_download_req_removed() {
         let res = client.get(get_url).send().await.unwrap();
 
         info!("got response {:?}", res);
-        assert_eq!(res.status(), 404);
+        assert_eq!(res.status(), 408);
 
         res
     });
@@ -327,7 +327,7 @@ async fn test_old_metadata_req_removed() {
         let res = client.get(get_url).send().await.unwrap();
 
         info!("got response {:?}", res);
-        assert_eq!(res.status(), 404);
+        assert_eq!(res.status(), 408);
 
         res
     });
@@ -391,7 +391,7 @@ async fn test_old_metadata_req_removed() {
     assert_eq!(data, expected_data);
 
     // validate is 404
-    assert_eq!(res.status(), 404);
+    assert_eq!(res.status(), 408);
 
     //kill the std thread without waiting
     if let Err(e) = tx.send(()) {

@@ -28,7 +28,6 @@ where
     }
     let sender = sender.unwrap();
 
-    //XXX timeout?
     while let Some(chk) = payload.next().await {
         if let Err(e) = sender.send(chk).await {
             error!("problem sending payload {:?}", e);
