@@ -22,6 +22,8 @@ pub struct Config {
     pub request_timeout_seconds: u64,
     /// Number of seconds between pings to a server
     pub ping_interval: u64,
+    /// The PSK that new clients can use to authenticate during registration
+    pub password: Option<String>,
 }
 
 impl Config {
@@ -58,6 +60,7 @@ impl Config {
                 .map_err(|_| "PING_INTERVAL must be set")?
                 .parse()
                 .map_err(|_| "PING_INTERVAL must be 64-bit integer")?,
+            password: env::var("PASSWORD").ok(),
         })
     }
 }

@@ -96,6 +96,7 @@ pub async fn create_server(
             auth_timeout_seconds: 3,
             request_timeout_seconds: 3,
             ping_interval: 3,
+            password: None,
         };
 
         let mut server = Box::pin(central_api_lib::start(config, server_state));

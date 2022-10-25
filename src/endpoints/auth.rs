@@ -1,40 +1,72 @@
 //! Handles authentication and registration of agents to the api
 
-use actix_web::{post, web::Data, HttpResponse};
+use actix_web::{post, web::Data, HttpRequest, HttpResponse};
 use log::error;
 use rand::{distributions::Alphanumeric, Rng};
 
 use crate::{
-    db::{Database, DbBackend, DbBackendError},
-    error::HttpError,
+    config::Config,
+    db::{Database, DbBackend},
 };
 
 /// Attempt to register a new webserver with the api
-async fn __register(state: impl DbBackend) -> Result<HttpResponse, HttpError> {
-    //Generate a public id for this api
-    let mut rand = rand::thread_rng();
-    let mut id: u64 = rand.gen();
-    while state.contains_entry(&id).await? {
-        id = rand.gen();
+async fn __register(
+    req: HttpRequest,
+    state: impl DbBackend,
+    config: Data<Config>,
+) -> Result<HttpResponse, HttpResponse> {
+    if let Some(psk) = &config.password {
+        let header = req.headers().get("Authorization");
+        if let Some(header) = header {
+            let header = header
+                .to_str()
+                .map_err(|_| HttpResponse::BadRequest().finish())?;
+            if header != format!("Basic {}", psk) {
+                return Err(HttpResponse::Unauthorized().finish());
+            }
+        } else {
+            return Err(HttpResponse::Unauthorized().finish());
+        }
     }
 
-    //Generate a passcode
+    // generate a public id for this api
+    let mut rand = rand::thread_rng();
+    let mut id: u64 = rand.gen();
+    loop {
+        match state.contains_entry(&id).await {
+            Ok(true) => id = rand.gen(),
+            Ok(false) => break,
+            Err(e) => {
+                error!("error while checking if id exists: {}", e);
+                return Err(HttpResponse::InternalServerError().finish());
+            }
+        }
+    }
+
+    // generate a passcode
     let passcode: Vec<u8> = rand.sample_iter(&Alphanumeric).take(32).collect();
 
-    //Insert passcode into database, if an error occurs
+    // insert passcode into database, if an error occurs
     if let Some(prev) = state
         .save_entry(
             id,
             passcode.clone(), /* Bad Clone, could be ampersand */
         )
-        .await?
+        .await
+        .map_err(|e| {
+            error!("error while saving entry: {}", e);
+            HttpResponse::InternalServerError().finish()
+        })?
     {
-        state.save_entry(id, prev).await?; //return old code to previous state
-        error!("Unlikely error occured: server_id was duplicate");
-        return Err(DbBackendError::AlreadyExist.into());
+        state.save_entry(id, prev).await.map_err(|e| {
+            error!("error while saving entry: {}", e);
+            HttpResponse::InternalServerError().finish()
+        })?;
+        error!("Unlikely error occurred: server_id was duplicate");
+        return Err(HttpResponse::InternalServerError().finish());
     }
 
-    //Return this new public_id/passcode pair
+    // return this new public_id/passcode pair
     Ok(HttpResponse::Created()
         .content_type("application/json")
         .body(format!(
@@ -46,20 +78,39 @@ async fn __register(state: impl DbBackend) -> Result<HttpResponse, HttpError> {
 
 /// Endpoint for registering a new agent with the api (POST /register)
 #[post("/register")]
-pub async fn register(state: Data<Database>) -> impl actix_web::Responder {
-    __register(state).await
+pub async fn register(
+    req: HttpRequest,
+    state: Data<Database>,
+    config: Data<Config>,
+) -> HttpResponse {
+    match __register(req, state, config).await {
+        Ok(resp) => resp,
+        Err(resp) => resp,
+    }
 }
 
 #[cfg(test)]
 #[cfg(not(tarpaulin_include))]
 mod test {
     use actix_web::body::MessageBody;
+    use actix_web::web::Data;
     use serde::Deserialize;
+    use std::net::TcpListener;
     use std::sync::Arc;
 
     use super::__register;
+    use crate::config::Config;
     use crate::db::tests::MockDb;
     use crate::db::{Database, DbBackend};
+
+    fn find_open_port() -> TcpListener {
+        for port in 1025..65535 {
+            if let Ok(l) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+                return l;
+            }
+        }
+        panic!("no open ports found");
+    }
 
     #[derive(Debug, Deserialize)]
     struct Id {
@@ -74,8 +125,23 @@ mod test {
 
         let mut keys = Vec::with_capacity(CONVERSION_COUNT as usize);
 
+        let config: Config = Config {
+            listener: find_open_port(),
+            db_url: String::new(),
+            base_url: "https://localhost:8080".into(),
+            auth_timeout_seconds: 3,
+            request_timeout_seconds: 3,
+            ping_interval: 3,
+            password: None,
+        };
+        let config = Data::new(config);
+
+        let req = actix_web::test::TestRequest::default().to_http_request();
+
         for _ in 0..CONVERSION_COUNT {
-            let i = __register(db.clone()).await.expect("registered properly");
+            let i = __register(req.clone(), db.clone(), config.clone())
+                .await
+                .expect("registered properly");
             //parse from body
             let body_bytes = i.into_body().try_into_bytes().unwrap();
             let body = std::str::from_utf8(&body_bytes).expect("valid string");
@@ -104,8 +170,23 @@ mod test {
 
         let mut keys = Vec::with_capacity(CONVERSION_COUNT as usize);
 
+        let config: Config = Config {
+            listener: find_open_port(),
+            db_url: String::new(),
+            base_url: "https://localhost:8080".into(),
+            auth_timeout_seconds: 3,
+            request_timeout_seconds: 3,
+            ping_interval: 3,
+            password: None,
+        };
+        let config = Data::new(config);
+
+        let req = actix_web::test::TestRequest::default().to_http_request();
+
         for _ in 0..CONVERSION_COUNT {
-            let i = __register(db.clone()).await.expect("registered properly");
+            let i = __register(req.clone(), db.clone(), config.clone())
+                .await
+                .expect("registered properly");
             //parse from body
             let body_bytes = i.into_body().try_into_bytes().unwrap();
             let body = std::str::from_utf8(&body_bytes).expect("valid string");
@@ -123,5 +204,62 @@ mod test {
         }
 
         std::fs::remove_file("./test-db.db").expect("able to write to db");
+    }
+
+    #[tokio::test]
+    async fn test_should_fail_unauthorized() {
+        let db = Arc::new(MockDb::new(String::new()).await.unwrap());
+
+        let config: Config = Config {
+            listener: find_open_port(),
+            db_url: String::new(),
+            base_url: "https://localhost:8080".into(),
+            auth_timeout_seconds: 3,
+            request_timeout_seconds: 3,
+            ping_interval: 3,
+            password: Some("password".into()),
+        };
+        let config = Data::new(config);
+
+        // no password
+        let req = actix_web::test::TestRequest::default().to_http_request();
+        let i = __register(req, db.clone(), config.clone())
+            .await
+            .expect_err("registered properly");
+        assert_eq!(i.status(), actix_web::http::StatusCode::UNAUTHORIZED);
+
+        // invalid password
+        let req = actix_web::test::TestRequest::default()
+            .insert_header(("Authorization", "Basic invalid"))
+            .to_http_request();
+        let i = __register(req, db.clone(), config.clone())
+            .await
+            .expect_err("registered properly");
+        assert_eq!(i.status(), actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_should_succeed_authorized() {
+        let db = Arc::new(MockDb::new(String::new()).await.unwrap());
+
+        let config: Config = Config {
+            listener: find_open_port(),
+            db_url: String::new(),
+            base_url: "https://localhost:8080".into(),
+            auth_timeout_seconds: 3,
+            request_timeout_seconds: 3,
+            ping_interval: 3,
+            password: Some("password".into()),
+        };
+        let config = Data::new(config);
+
+        // valid password
+        let req = actix_web::test::TestRequest::default()
+            .insert_header(("Authorization", "Basic password"))
+            .to_http_request();
+        let i = __register(req, db.clone(), config.clone())
+            .await
+            .expect("registered properly");
+        assert_eq!(i.status(), actix_web::http::StatusCode::CREATED);
     }
 }

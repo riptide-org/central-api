@@ -28,16 +28,12 @@
 //TODO: relevant to above, refactor the metadata/status response generation from websockets into download/info
 //XXX: refactor the `openapi.oas.yml` file to reduce duplication
 
-///////// Testing /////////
-//TODO: add test to ensure that the agent is removed from the state when it disconnects
-
 #[macro_use]
 extern crate diesel;
 
 pub mod config;
 pub mod db;
 pub mod endpoints;
-pub mod error;
 pub mod models;
 #[cfg(not(tarpaulin_include))]
 pub mod schema;
